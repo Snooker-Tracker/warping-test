@@ -1,5 +1,6 @@
 import cv2
 import os
+import time
 
 from detection import detect_table_corners, detect_balls, detect_table_orientation
 from warping import TableWarper
@@ -83,8 +84,14 @@ def main():
     current_frame = None
     current_warped = None
     current_tracked = None
+    
+    # FPS tracking
+    fps = 0
+    prev_time = time.time()
 
     while True:
+        frame_time = time.time()
+        
         if not paused:
             ret, frame = cap.read()
             if not ret:
@@ -102,9 +109,15 @@ def main():
         # Draw tracked balls
         warped = draw_tracked_balls(warped, tracked)
 
+        # Calculate FPS
+        elapsed = time.time() - prev_time
+        if elapsed > 0:
+            fps = 0.9 * fps + 0.1 * (1.0 / elapsed)
+        prev_time = time.time()
+
         # Display combined view with pause status
         pause_text = " [PAUSED]" if paused else ""
-        display_combined(frame, warped, f"Frame: {frame_count} | Balls: {len(tracked)}{pause_text}", is_landscape=is_long_side)
+        display_combined(frame, warped, f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)}{pause_text}", is_landscape=is_long_side)
 
         # Handle key presses
         key = cv2.waitKey(30) & 0xFF
