@@ -14,21 +14,24 @@ abort_flag = False
 # UTILS
 # ============================
 
+
 def order_points(pts):
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
 
-    rect[0] = pts[np.argmin(s)]       # top-left
-    rect[2] = pts[np.argmax(s)]       # bottom-right
-    rect[1] = pts[np.argmin(diff)]    # top-right
-    rect[3] = pts[np.argmax(diff)]    # bottom-left
+    rect[0] = pts[np.argmin(s)]  # top-left
+    rect[2] = pts[np.argmax(s)]  # bottom-right
+    rect[1] = pts[np.argmin(diff)]  # top-right
+    rect[3] = pts[np.argmax(diff)]  # bottom-left
 
     return rect
+
 
 # ============================
 # AUTOMATIC TABLE DETECTION
 # ============================
+
 
 def detect_table_corners(frame):
     """
@@ -46,9 +49,7 @@ def detect_table_corners(frame):
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
 
-    contours, _ = cv2.findContours(
-        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
         return None
@@ -64,18 +65,17 @@ def detect_table_corners(frame):
 
     return order_points(approx.reshape(4, 2))
 
+
 # ============================
 # TABLE WARPER
 # ============================
 
+
 class TableWarper:
     def __init__(self, dst_size):
-        self.dst_pts = np.float32([
-            [0, 0],
-            [dst_size[0], 0],
-            [dst_size[0], dst_size[1]],
-            [0, dst_size[1]]
-        ])
+        self.dst_pts = np.float32(
+            [[0, 0], [dst_size[0], 0], [dst_size[0], dst_size[1]], [0, dst_size[1]]]
+        )
         self.matrix = None
         self.size = dst_size
 
@@ -85,9 +85,11 @@ class TableWarper:
     def warp(self, frame):
         return cv2.warpPerspective(frame, self.matrix, self.size)
 
+
 # ============================
 # CENTROID TRACKER
 # ============================
+
 
 class CentroidTracker:
     def __init__(self, max_distance=60):
@@ -113,66 +115,71 @@ class CentroidTracker:
         self.objects = updated
         return self.objects
 
+
 # ============================
 # IMPROVED BALL DETECTION
 # ============================
 
+
 def setup_blob_detector():
     """Setup SimpleBlobDetector with parameters optimized for ball detection."""
     params = cv2.SimpleBlobDetector_Params()
-    
+
     # Filter by area - very lenient
     params.filterByArea = True
     params.minArea = 5
     params.maxArea = 20000
-    
+
     # Filter by circularity - very lenient
     params.filterByCircularity = True
     params.minCircularity = 0.1
-    
+
     # Filter by color (dark blobs)
     params.filterByColor = False
-    
+
     # Filter by convexity - very lenient
     params.filterByConvexity = True
     params.minConvexity = 0.3
-    
+
     # Filter by inertia - very lenient
     params.filterByInertia = True
     params.minInertiaRatio = 0.1
-    
+
     return cv2.SimpleBlobDetector_create(params)
+
 
 def detect_balls(frame):
     """Detect balls using SimpleBlobDetector."""
     # Create a binary mask by inverting the green table
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
+
     # Table mask (green)
     table_lower = np.array([35, 40, 40])
     table_upper = np.array([85, 255, 255])
     table_mask = cv2.inRange(hsv, table_lower, table_upper)
-    
+
     # Invert to get non-table objects (balls, shadows, etc.)
     mask = cv2.bitwise_not(table_mask)
-    
+
     # Apply morphological operations to clean up
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    
+
     # Detect blobs
     detector = setup_blob_detector()
     keypoints = detector.detect(mask)
-    
+
     # Extract centroids from keypoints
     detections = [(int(kp.pt[0]), int(kp.pt[1])) for kp in keypoints]
-    
+
     return detections
+
 
 # ============================
 # MAIN
 # ============================
+
 
 def mouse_callback(event, x, y, flags, param):
     """Callback for mouse events on the combined display window."""
@@ -185,50 +192,59 @@ def mouse_callback(event, x, y, flags, param):
         if w - 100 < x < w and 0 < y < 40:
             abort_flag = True
 
+
 def display_combined(original, warped, text_info=""):
     """
     Display original and warped images side by side.
     """
     # Scale down by 50% for smaller window
     scale = 0.5
-    original_scaled = cv2.resize(original, (int(original.shape[1] * scale), int(original.shape[0] * scale)))
-    
+    original_scaled = cv2.resize(
+        original, (int(original.shape[1] * scale), int(original.shape[0] * scale))
+    )
+
     h, w = original_scaled.shape[:2]
     wh, ww = warped.shape[:2]
-    
+
     # Resize warped to match original height for better side-by-side view
     aspect_ratio = ww / wh
     new_w = int(h * aspect_ratio)
     warped_resized = cv2.resize(warped, (new_w, h))
-    
+
     # Create combined image
     combined = np.hstack([original_scaled, warped_resized])
-    
+
     # Add info text
     if text_info:
-        cv2.putText(combined, text_info, (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-    
+        cv2.putText(
+            combined, text_info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1
+        )
+
     # Display and set mouse callback
     cv2.imshow("Original | Warped", combined)
     cv2.setMouseCallback("Original | Warped", mouse_callback, combined)
-    
+
     return combined
+
 
 def main():
     global abort_flag
-    
+
     # Ask user for video path
     print("\n=== Ball Tracking System ===")
     print("Available videos:")
     video_dir = "videos"
     if os.path.exists(video_dir):
-        videos = [f for f in os.listdir(video_dir) if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))]
+        videos = [
+            f
+            for f in os.listdir(video_dir)
+            if f.endswith((".mp4", ".avi", ".mov", ".mkv"))
+        ]
         for i, v in enumerate(videos, 1):
             print(f"  {i}. {v}")
-    
+
     video_path = input("\nEnter video path (or video number): ").strip()
-    
+
     # If user entered a number, select from available videos
     if video_path.isdigit():
         video_num = int(video_path) - 1
@@ -237,11 +253,11 @@ def main():
         else:
             print("ERROR: Invalid video number")
             return
-    
+
     if not os.path.exists(video_path):
         print(f"ERROR: Video file not found: {video_path}")
         return
-    
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("ERROR: Cannot open video")
@@ -272,7 +288,7 @@ def main():
 
     while True:
         abort_flag = False
-        
+
         if not paused:
             ret, frame = cap.read()
             if not ret:
@@ -282,7 +298,7 @@ def main():
             current_warped = warper.warp(frame)
             detections = detect_balls(current_warped)
             current_tracked = tracker.update(detections)
-        
+
         frame = current_frame
         warped = current_warped
         tracked = current_tracked
@@ -296,12 +312,14 @@ def main():
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
                 (255, 255, 255),
-                1
+                1,
             )
 
         # Display combined view with pause status
         pause_text = " [PAUSED]" if paused else ""
-        display_combined(frame, warped, f"Frame: {frame_count} | Balls: {len(tracked)}{pause_text}")
+        display_combined(
+            frame, warped, f"Frame: {frame_count} | Balls: {len(tracked)}{pause_text}"
+        )
 
         # Handle key presses and abort flag
         key = cv2.waitKey(30) & 0xFF
@@ -312,6 +330,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

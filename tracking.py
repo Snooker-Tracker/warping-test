@@ -4,7 +4,7 @@ from collections import OrderedDict
 
 class CentroidTracker:
     """Tracks ball positions using centroid matching."""
-    
+
     def __init__(self, max_distance=60):
         self.objects = OrderedDict()
         self.next_id = 0

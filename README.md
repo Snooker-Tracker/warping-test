@@ -31,6 +31,15 @@ python main.py
 
 Select a video when prompted (by number or file path).
 
+## Pre-commit
+
+This repo includes a basic pre-commit setup for linting/formatting. To enable it:
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run -a
+```
+
 ## Controls
 
 - SPACE: Pause/Resume

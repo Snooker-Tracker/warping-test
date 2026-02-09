@@ -16,16 +16,20 @@ def select_video():
     print("\n=== Ball Tracking System ===")
     print("Available videos:")
     video_dir = "videos"
-    
+
     if os.path.exists(video_dir):
-        videos = [f for f in os.listdir(video_dir) if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))]
+        videos = [
+            f
+            for f in os.listdir(video_dir)
+            if f.endswith((".mp4", ".avi", ".mov", ".mkv"))
+        ]
         for i, v in enumerate(videos, 1):
             print(f"  {i}. {v}")
     else:
         videos = []
-    
+
     video_path = input("\nEnter video path (or video number): ").strip()
-    
+
     # If user entered a number, select from available videos
     if video_path.isdigit():
         video_num = int(video_path) - 1
@@ -34,11 +38,11 @@ def select_video():
         else:
             print("ERROR: Invalid video number")
             return None
-    
+
     if not os.path.exists(video_path):
         print(f"ERROR: Video file not found: {video_path}")
         return None
-    
+
     return video_path
 
 
@@ -46,7 +50,7 @@ def main():
     video_path = select_video()
     if video_path is None:
         return
-    
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("ERROR: Cannot open video")
@@ -70,7 +74,7 @@ def main():
     else:
         table_w, table_h = SHORT_SIDE_W, SHORT_SIDE_H
         print("Detected: Filming from SHORT side")
-    
+
     print(f"Detected table corners: {table_pts}")
     print(f"Warp dimensions: {table_w}x{table_h}")
     print("Press SPACE to pause/resume, ESC to quit")
@@ -84,14 +88,12 @@ def main():
     current_frame = None
     current_warped = None
     current_tracked = None
-    
+
     # FPS tracking
     fps = 0
     prev_time = time.time()
 
     while True:
-        frame_time = time.time()
-        
         if not paused:
             ret, frame = cap.read()
             if not ret:
@@ -101,7 +103,7 @@ def main():
             current_warped = warper.warp(frame)
             detections = detect_balls(current_warped)
             current_tracked = tracker.update(detections)
-        
+
         frame = current_frame
         warped = current_warped.copy()
         tracked = current_tracked
@@ -117,7 +119,12 @@ def main():
 
         # Display combined view with pause status
         pause_text = " [PAUSED]" if paused else ""
-        display_combined(frame, warped, f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)}{pause_text}", is_landscape=is_long_side)
+        display_combined(
+            frame,
+            warped,
+            f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)}{pause_text}",
+            is_landscape=is_long_side,
+        )
 
         # Handle key presses
         key = cv2.waitKey(30) & 0xFF
