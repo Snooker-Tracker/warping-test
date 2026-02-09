@@ -3,6 +3,11 @@
 import cv2
 import numpy as np
 
+TABLE_HSV_LOWER = np.array([35, 40, 40])
+TABLE_HSV_UPPER = np.array([85, 255, 255])
+
+ALLOWED_BALL_LABELS = {"cue", "yellow", "green", "brown", "blue", "pink", "black"}
+
 
 def order_points(pts):
     """Order corner points: top-left, top-right, bottom-right, bottom-left."""
@@ -25,10 +30,7 @@ def detect_table_corners(frame):
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    lower_green = np.array([35, 40, 40])
-    upper_green = np.array([85, 255, 255])
-
-    mask = cv2.inRange(hsv, lower_green, upper_green)
+    mask = cv2.inRange(hsv, TABLE_HSV_LOWER, TABLE_HSV_UPPER)
 
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
@@ -65,59 +67,191 @@ def detect_table_orientation(corners):
     return top_edge > left_edge
 
 
+_BLOB_DETECTOR = None
+
+
 def setup_blob_detector():
     """Setup SimpleBlobDetector with parameters optimized for ball detection."""
     params = cv2.SimpleBlobDetector_Params()
 
-    # Filter by area - very lenient
+    # Filter by area - lenient range
     params.filterByArea = True
-    params.minArea = 5
-    params.maxArea = 20000
+    params.minArea = 8
+    params.maxArea = 80000
 
-    # Filter by circularity - lenient but stable
+    # Filter by circularity
     params.filterByCircularity = True
-    params.minCircularity = 0.2
+    params.minCircularity = 0.05
 
-    # Filter by color (dark blobs)
-    params.filterByColor = False
+    # Filter by color (white blobs on mask)
+    params.filterByColor = True
+    params.blobColor = 255
 
-    # Filter by convexity - more stable
+    # Thresholding for binary/near-binary masks
+    params.minThreshold = 0
+    params.maxThreshold = 255
+    params.thresholdStep = 5
+
+    # Filter by convexity
     params.filterByConvexity = True
-    params.minConvexity = 0.4
+    params.minConvexity = 0.2
 
-    # Filter by inertia - more stable
+    # Filter by inertia
     params.filterByInertia = True
-    params.minInertiaRatio = 0.2
+    params.minInertiaRatio = 0.05
 
-    # Minimum distance between blobs - increased to prevent flickering
-    params.minDistBetweenBlobs = 5
+    # Minimum distance between blobs
+    params.minDistBetweenBlobs = 2
 
     return cv2.SimpleBlobDetector_create(params)
 
 
-def detect_balls(frame):
-    """Detect balls using SimpleBlobDetector."""
-    # Create a binary mask by inverting the green table
+def _get_blob_detector():
+    return setup_blob_detector()
+
+
+def detect_balls_blob(frame):
+    """Detect balls using SimpleBlobDetector and classify by color."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     # Table mask (green)
-    table_lower = np.array([35, 40, 40])
-    table_upper = np.array([85, 255, 255])
-    table_mask = cv2.inRange(hsv, table_lower, table_upper)
+    table_mask = cv2.inRange(hsv, TABLE_HSV_LOWER, TABLE_HSV_UPPER)
 
     # Invert to get non-table objects (balls, shadows, etc.)
     mask = cv2.bitwise_not(table_mask)
 
-    # Apply morphological operations to clean up and stabilize
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # Apply a light close to connect ball blobs without erasing small balls
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     # Detect blobs
-    detector = setup_blob_detector()
+    detector = _get_blob_detector()
     keypoints = detector.detect(mask)
 
-    # Extract centroids from keypoints
-    detections = [(int(kp.pt[0]), int(kp.pt[1])) for kp in keypoints]
+    detections = []
+    for kp in keypoints:
+        x, y = int(kp.pt[0]), int(kp.pt[1])
+        r = max(2, int(kp.size / 2))
+        label = classify_ball_color(hsv, x, y, r)
+        if label in ALLOWED_BALL_LABELS:
+            detections.append({"x": x, "y": y, "r": r, "label": label})
+
+    # Add contour-based circle candidates to catch green/brown/pink balls
+    min_r, max_r = _estimate_radius_bounds(frame.shape[:2])
+    contour_circles = _detect_circles_contour(gray, min_r, max_r)
+    detections = _merge_circle_detections(detections, contour_circles, hsv)
 
     return detections
+
+
+def detect_balls_hough(_frame):
+    """Deprecated: kept for reference, prefer detect_balls_blob."""
+    return []
+
+
+def classify_ball_color(hsv_frame, x, y, r):
+    """Classify a ball color based on mean HSV in a circular mask."""
+    h, s, v = _median_hsv_in_circle(hsv_frame, x, y, r)
+    label = "unknown"
+
+    if v < 50:
+        label = "black"
+    elif s < 40 and v > 150:
+        label = "cue"
+    elif h <= 12 or h >= 170:
+        label = "red"
+    elif 12 < h < 25 and v < 160:
+        label = "brown"
+    elif 15 <= h <= 40:
+        label = "yellow"
+    elif 40 < h <= 85:
+        label = "green"
+    elif 90 <= h <= 135:
+        label = "blue"
+    elif 145 <= h < 170:
+        # Only accept pink when it's very bright and less saturated
+        if v >= 170 and s < 140:
+            label = "pink"
+        else:
+            label = "red"
+
+    return label
+
+
+def _median_hsv_in_circle(hsv_frame, x, y, r):
+    h, w = hsv_frame.shape[:2]
+    x = int(np.clip(x, 0, w - 1))
+    y = int(np.clip(y, 0, h - 1))
+    r = max(2, int(r * 0.6))
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.circle(mask, (x, y), r, 255, -1)
+
+    pixels = hsv_frame[mask == 255]
+    if pixels.size == 0:
+        return 0.0, 0.0, 0.0
+
+    # Filter out very dark pixels to avoid shadow bias.
+    val = pixels[:, 2]
+    keep = val > 30
+    if keep.any():
+        pixels = pixels[keep]
+
+    h_med = float(np.median(pixels[:, 0]))
+    s_med = float(np.median(pixels[:, 1]))
+    v_med = float(np.median(pixels[:, 2]))
+    return h_med, s_med, v_med
+
+
+def _detect_circles_contour(gray, min_radius, max_radius):
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    circles = []
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area <= 0:
+            continue
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter <= 0:
+            continue
+        circularity = 4 * np.pi * (area / (perimeter * perimeter))
+        if circularity < 0.5:
+            continue
+
+        (x, y), radius = cv2.minEnclosingCircle(contour)
+        radius = int(radius)
+        if min_radius <= radius <= max_radius:
+            circles.append((int(x), int(y), radius))
+
+    return circles
+
+
+def _estimate_radius_bounds(shape):
+    h, w = shape[:2]
+    min_dim = min(h, w)
+    min_radius = max(2, int(min_dim * 0.01))
+    max_radius = max(min_radius + 2, int(min_dim * 0.045))
+    return min_radius, max_radius
+
+
+def _merge_circle_detections(detections, circles, hsv):
+    merged = list(detections)
+    for x, y, r in circles:
+        if _is_near_existing(merged, x, y, r):
+            continue
+        label = classify_ball_color(hsv, x, y, r)
+        if label in ALLOWED_BALL_LABELS:
+            merged.append({"x": int(x), "y": int(y), "r": int(r), "label": label})
+    return merged
+
+
+def _is_near_existing(detections, x, y, r):
+    for det in detections:
+        dx = det["x"] - x
+        dy = det["y"] - y
+        if dx * dx + dy * dy <= (r * r):
+            return True
+    return False

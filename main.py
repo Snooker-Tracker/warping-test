@@ -5,10 +5,10 @@ import time
 
 import cv2
 
-from detection import detect_table_corners, detect_balls, detect_table_orientation
-from warping import TableWarper
-from tracking import CentroidTracker
+from detection import detect_balls_blob, detect_table_corners, detect_table_orientation
 from display import display_combined, draw_tracked_balls
+from tracking import KalmanBallTracker
+from warping import TableWarper
 
 SHORT_SIDE_W = 280
 SHORT_SIDE_H = 560
@@ -86,12 +86,12 @@ def main():
     warper = TableWarper((table_w, table_h))
     warper.compute(table_pts)
 
-    tracker = CentroidTracker()
+    tracker = KalmanBallTracker(max_missing=12, gating_distance=60)
     frame_count = 0
     paused = False
     current_frame = None
     current_warped = None
-    current_tracked = None
+    current_tracked = {}
 
     # FPS tracking
     fps = 0
@@ -105,7 +105,7 @@ def main():
             frame_count += 1
             current_frame = frame
             current_warped = warper.warp(frame)
-            detections = detect_balls(current_warped)
+            detections = detect_balls_blob(current_warped)
             current_tracked = tracker.update(detections)
 
         frame = current_frame
