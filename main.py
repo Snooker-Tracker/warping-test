@@ -1,6 +1,9 @@
-import cv2
+"""Main entry point for the ball tracking system."""
+
 import os
 import time
+
+import cv2
 
 from detection import detect_table_corners, detect_balls, detect_table_orientation
 from warping import TableWarper
@@ -47,6 +50,7 @@ def select_video():
 
 
 def main():
+    """Run the ball tracking pipeline for a selected video."""
     video_path = select_video()
     if video_path is None:
         return
@@ -130,7 +134,7 @@ def main():
         key = cv2.waitKey(30) & 0xFF
         if key == 27:  # ESC to quit
             break
-        elif key == 32:  # SPACE to pause/resume
+        if key == 32:  # SPACE to pause/resume
             paused = not paused
 
     cap.release()

@@ -1,3 +1,5 @@
+"""Centroid-based tracking for detected balls."""
+
 import math
 from collections import OrderedDict
 
@@ -28,3 +30,8 @@ class CentroidTracker:
 
         self.objects = updated
         return self.objects
+
+    def reset(self):
+        """Reset tracker state."""
+        self.objects.clear()
+        self.next_id = 0

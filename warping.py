@@ -1,3 +1,5 @@
+"""Perspective warping utilities for the table view."""
+
 import cv2
 import numpy as np
 

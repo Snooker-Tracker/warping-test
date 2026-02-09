@@ -1,3 +1,5 @@
+"""Rendering helpers for the tracking UI."""
+
 import cv2
 import numpy as np
 
@@ -14,7 +16,7 @@ def display_combined(original, warped, text_info="", is_landscape=False):
         original, (int(original.shape[1] * scale), int(original.shape[0] * scale))
     )
 
-    h, w = original_scaled.shape[:2]
+    h, _ = original_scaled.shape[:2]
     wh, ww = warped.shape[:2]
 
     if is_landscape:
