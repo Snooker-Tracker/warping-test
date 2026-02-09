@@ -49,26 +49,23 @@ def select_video():
     return video_path
 
 
-def main():
-    """Run the ball tracking pipeline for a selected video."""
-    video_path = select_video()
-    if video_path is None:
-        return
-
+def _initialize_video(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("ERROR: Cannot open video")
-        return
+        return None, None, None
 
     ret, first_frame = cap.read()
     if not ret:
         print("ERROR: Empty video")
-        return
+        cap.release()
+        return None, None, None
 
     table_pts = detect_table_corners(first_frame)
     if table_pts is None:
         print("ERROR: Table not detected")
-        return
+        cap.release()
+        return None, None, None
 
     # Detect table orientation
     is_long_side = detect_table_orientation(table_pts)
@@ -81,65 +78,88 @@ def main():
 
     print(f"Detected table corners: {table_pts}")
     print(f"Warp dimensions: {table_w}x{table_h}")
-    print("Press SPACE to pause/resume, ESC to quit")
+    print("Press SPACE to pause/resume, R to restart, ESC to quit")
 
     warper = TableWarper((table_w, table_h))
     warper.compute(table_pts)
 
-    tracker = KalmanBallTracker(max_missing=12, gating_distance=60)
-    frame_count = 0
-    paused = False
-    current_frame = None
-    current_warped = None
-    current_tracked = {}
+    return cap, warper, is_long_side
 
-    # FPS tracking
-    fps = 0
-    prev_time = time.time()
+
+def main():
+    """Run the ball tracking pipeline for a selected video."""
+    video_path = select_video()
+    if video_path is None:
+        return
 
     while True:
-        if not paused:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame_count += 1
-            current_frame = frame
-            current_warped = warper.warp(frame)
-            detections = detect_balls_blob(current_warped)
-            current_tracked = tracker.update(detections)
+        cap, warper, is_long_side = _initialize_video(video_path)
+        if cap is None:
+            return
 
-        frame = current_frame
-        warped = current_warped.copy()
-        tracked = current_tracked
+        tracker = KalmanBallTracker(max_missing=12, gating_distance=60)
+        frame_count = 0
+        paused = False
+        current_frame = None
+        current_warped = None
+        current_tracked = {}
 
-        # Draw tracked balls
-        warped = draw_tracked_balls(warped, tracked)
-
-        # Calculate FPS
-        elapsed = time.time() - prev_time
-        if elapsed > 0:
-            fps = 0.9 * fps + 0.1 * (1.0 / elapsed)
+        # FPS tracking
+        fps = 0
         prev_time = time.time()
+        restart_requested = False
 
-        # Display combined view with pause status
-        pause_text = " [PAUSED]" if paused else ""
-        display_combined(
-            frame,
-            warped,
-            f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)}{pause_text}",
-            is_landscape=is_long_side,
-        )
+        while True:
+            if not paused:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_count += 1
+                current_frame = frame
+                current_warped = warper.warp(frame)
+                detections = detect_balls_blob(current_warped)
+                current_tracked = tracker.update(detections)
 
-        # Handle key presses and window close events
-        key = cv2.waitKey(30) & 0xFF
-        if not is_window_open():
+            frame = current_frame
+            warped = current_warped.copy()
+            tracked = current_tracked
+
+            # Draw tracked balls
+            warped = draw_tracked_balls(warped, tracked)
+
+            # Calculate FPS
+            elapsed = time.time() - prev_time
+            if elapsed > 0:
+                fps = 0.9 * fps + 0.1 * (1.0 / elapsed)
+            prev_time = time.time()
+
+            # Display combined view with pause status
+            pause_text = " [PAUSED]" if paused else ""
+            display_combined(
+                frame,
+                warped,
+                f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)}{pause_text}",
+                is_landscape=is_long_side,
+            )
+
+            # Handle key presses and window close events
+            key = cv2.waitKey(30) & 0xFF
+            if not is_window_open():
+                restart_requested = False
+                break
+            if key == 27:  # ESC to quit
+                restart_requested = False
+                break
+            if key in (ord("r"), ord("R")):
+                restart_requested = True
+                break
+            if key == 32:  # SPACE to pause/resume
+                paused = not paused
+
+        cap.release()
+        if not restart_requested:
             break
-        if key == 27:  # ESC to quit
-            break
-        if key == 32:  # SPACE to pause/resume
-            paused = not paused
 
-    cap.release()
     cv2.destroyAllWindows()
 
 

@@ -47,6 +47,7 @@ pre-commit run -a
 
 - SPACE: Pause/Resume
 - ESC: Quit
+- R: Restart video
 
 ## File Structure
 
