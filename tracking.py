@@ -141,7 +141,11 @@ def _select_best_detection(candidates, pred_x, pred_y, gating_distance):
             best = det
             best_dist = dist
 
-    if best_dist is not None and gating_distance is not None and best_dist > gating_distance:
+    if (
+        best_dist is not None
+        and gating_distance is not None
+        and best_dist > gating_distance
+    ):
         return None
 
     return best

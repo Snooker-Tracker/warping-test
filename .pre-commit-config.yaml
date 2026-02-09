@@ -12,3 +12,11 @@ repos:
       - id: ruff
         args: ["--fix"]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: pylint
+        name: pylint
+        entry: python -m pylint
+        language: system
+        types: [python]

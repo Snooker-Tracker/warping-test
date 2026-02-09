@@ -4,20 +4,19 @@ import cv2
 import numpy as np
 
 WINDOW_NAME = "Original | Warped"
-_WINDOW_INITIALIZED = False
+_WINDOW_STATE = {"initialized": False}
 
 
 def _ensure_window():
-    global _WINDOW_INITIALIZED
-    if not _WINDOW_INITIALIZED:
+    if not _WINDOW_STATE["initialized"]:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-        _WINDOW_INITIALIZED = True
+        _WINDOW_STATE["initialized"] = True
 
 
 def _resize_to_window(image):
     try:
         _, _, win_w, win_h = cv2.getWindowImageRect(WINDOW_NAME)
-    except cv2.error:
+    except Exception:  # pylint: disable=broad-exception-caught
         return image
 
     if win_w <= 0 or win_h <= 0:
