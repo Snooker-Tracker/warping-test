@@ -2,6 +2,9 @@
 
 A computer vision system for tracking balls on a snooker table from video.
 
+For videos to show up create a `videos/` file directory in the root directory of the program. 
+
+
 ## Features
 
 - Automatic table corner detection (works with any camera angle)
