@@ -6,7 +6,7 @@ import time
 import cv2
 
 from detection import detect_balls_blob, detect_table_corners, detect_table_orientation
-from display import display_combined, draw_tracked_balls
+from display import display_combined, draw_tracked_balls, is_window_open
 from tracking import KalmanBallTracker
 from warping import TableWarper
 
@@ -130,8 +130,10 @@ def main():
             is_landscape=is_long_side,
         )
 
-        # Handle key presses
+        # Handle key presses and window close events
         key = cv2.waitKey(30) & 0xFF
+        if not is_window_open():
+            break
         if key == 27:  # ESC to quit
             break
         if key == 32:  # SPACE to pause/resume

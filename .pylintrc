@@ -6,4 +6,4 @@ extension-pkg-allow-list=cv2
 generated-members=cv2.*
 
 [MESSAGES CONTROL]
-disable=too-many-locals,too-many-statements,no-member
+disable=too-many-locals,too-many-statements,too-many-branches,no-member

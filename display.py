@@ -4,12 +4,16 @@ import cv2
 import numpy as np
 
 WINDOW_NAME = "Original | Warped"
-_WINDOW_STATE = {"initialized": False}
+_WINDOW_STATE = {"initialized": False, "last_size": (0, 0)}
 
 
 def _ensure_window():
     if not _WINDOW_STATE["initialized"]:
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        try:
+            cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_TOPMOST, 1)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
         _WINDOW_STATE["initialized"] = True
 
 
@@ -23,6 +27,8 @@ def _resize_to_window(image):
         return image
 
     h, w = image.shape[:2]
+    if abs(win_w - w) < 2 and abs(win_h - h) < 2:
+        return image
     scale = min(win_w / w, win_h / h)
     if scale <= 0:
         return image
@@ -32,6 +38,13 @@ def _resize_to_window(image):
     if new_w == w and new_h == h:
         return image
     return cv2.resize(image, (new_w, new_h))
+
+def is_window_open():
+    """Return True if the display window is still open."""
+    try:
+        return cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) >= 1
+    except Exception:  # pylint: disable=broad-exception-caught
+        return False
 
 
 def display_combined(original, warped, text_info="", is_landscape=False):
@@ -72,6 +85,9 @@ def display_combined(original, warped, text_info="", is_landscape=False):
         )
 
     _ensure_window()
+    if _WINDOW_STATE["last_size"] != combined.shape[:2][::-1]:
+        _WINDOW_STATE["last_size"] = combined.shape[:2][::-1]
+        cv2.resizeWindow(WINDOW_NAME, _WINDOW_STATE["last_size"][0], _WINDOW_STATE["last_size"][1])
     combined = _resize_to_window(combined)
     cv2.imshow(WINDOW_NAME, combined)
 
