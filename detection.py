@@ -228,22 +228,19 @@ def classify_ball_color(hsv_frame, x, y, r):
         label = "black"
     elif s < 40 and v > 150:
         label = "cue"
-    elif h <= 12 or h >= 170:
-        label = "red"
-    elif 12 < h < 25 and v < 160:
+    # Prioritize brown/pink over red when warm hues overlap.
+    elif 10 <= h <= 26 and 45 <= s <= 210 and v < 185:
         label = "brown"
+    elif 140 <= h < 178 and v >= 145 and s <= 190:
+        label = "pink"
     elif 15 <= h <= 40:
         label = "yellow"
     elif 40 < h <= 85:
         label = "green"
     elif 90 <= h <= 135:
         label = "blue"
-    elif 145 <= h < 170:
-        # Only accept pink when it's very bright and less saturated
-        if v >= 170 and s < 140:
-            label = "pink"
-        else:
-            label = "red"
+    elif h <= 15 or h >= 165:
+        label = "red"
 
     return label
 

@@ -43,10 +43,13 @@ class CentroidTracker:
 class KalmanBallTracker:
     """Lightweight multi-object tracker using per-ball Kalman filters."""
 
-    def __init__(self, max_missing=10, gating_distance=50):
+    def __init__(self, max_missing=10, gating_distance=50, max_red_tracks=15):
         self.max_missing = max_missing
         self.gating_distance = gating_distance
-        self.tracks = {}
+        self.max_red_tracks = max(0, int(max_red_tracks))
+        self.single_tracks = {}
+        self.red_tracks = {}
+        self._next_red_track_id = 0
 
     def update(self, detections):
         """
@@ -56,14 +59,14 @@ class KalmanBallTracker:
             detections: list of dicts with keys x, y, r, label
 
         Returns:
-            dict[label] -> (x, y, r)
+            dict[track_label] -> (x, y, r)
         """
         grouped = {}
         for det in detections:
             grouped.setdefault(det["label"], []).append(det)
 
-        # Update existing tracks
-        for label, track in list(self.tracks.items()):
+        # Update existing non-red tracks (single instance per label).
+        for label, track in list(self.single_tracks.items()):
             pred_x, pred_y = _predict(track["kf"])
 
             match = _select_best_detection(
@@ -79,27 +82,73 @@ class KalmanBallTracker:
                 track["last"] = (pred_x, pred_y)
 
             if track["missing"] > self.max_missing:
-                del self.tracks[label]
+                del self.single_tracks[label]
 
-        # Add new tracks for unseen labels
+        # Add non-red tracks for unseen labels.
         for label, candidates in grouped.items():
-            if label in self.tracks:
+            if label == "red" or label in self.single_tracks:
                 continue
             best = _select_best_detection(candidates, None, None, None)
             if best is None:
                 continue
-            self.tracks[label] = _create_track(best["x"], best["y"], best["r"])
+            self.single_tracks[label] = _create_track(best["x"], best["y"], best["r"])
+
+        # Update multi-instance red tracks.
+        self._update_red_tracks(grouped.get("red", []))
 
         tracked = {}
-        for label, track in self.tracks.items():
+        for label, track in self.single_tracks.items():
             x, y = track["last"]
             tracked[label] = (int(x), int(y), int(track["radius"]))
 
+        for idx, track_id in enumerate(sorted(self.red_tracks), start=1):
+            track = self.red_tracks[track_id]
+            x, y = track["last"]
+            tracked[f"red_{idx}"] = (int(x), int(y), int(track["radius"]))
+
         return tracked
+
+    def _update_red_tracks(self, red_candidates):
+        predictions = {}
+        for track_id, track in self.red_tracks.items():
+            pred_x, pred_y = _predict(track["kf"])
+            track["last"] = (pred_x, pred_y)
+            predictions[track_id] = (pred_x, pred_y)
+
+        matches, unmatched_tracks, unmatched_dets = _match_tracks_to_detections(
+            predictions, red_candidates, self.gating_distance
+        )
+
+        for track_id, det_idx in matches:
+            det = red_candidates[det_idx]
+            track = self.red_tracks[track_id]
+            _correct(track["kf"], det["x"], det["y"])
+            track["missing"] = 0
+            track["radius"] = det["r"]
+            track["last"] = (det["x"], det["y"])
+
+        for track_id in unmatched_tracks:
+            track = self.red_tracks.get(track_id)
+            if track is None:
+                continue
+            track["missing"] += 1
+            if track["missing"] > self.max_missing:
+                del self.red_tracks[track_id]
+
+        for det_idx in unmatched_dets:
+            if len(self.red_tracks) >= self.max_red_tracks:
+                break
+            det = red_candidates[det_idx]
+            self.red_tracks[self._next_red_track_id] = _create_track(
+                det["x"], det["y"], det["r"]
+            )
+            self._next_red_track_id += 1
 
     def reset(self):
         """Clear all tracked balls."""
-        self.tracks.clear()
+        self.single_tracks.clear()
+        self.red_tracks.clear()
+        self._next_red_track_id = 0
 
 
 def _create_track(x, y, r):
@@ -149,3 +198,37 @@ def _select_best_detection(candidates, pred_x, pred_y, gating_distance):
         return None
 
     return best
+
+
+def _match_tracks_to_detections(predictions, detections, gating_distance):
+    if not predictions:
+        return [], [], list(range(len(detections)))
+    if not detections:
+        return [], list(predictions.keys()), []
+
+    pairs = []
+    for track_id, (pred_x, pred_y) in predictions.items():
+        for det_idx, det in enumerate(detections):
+            dist = math.hypot(det["x"] - pred_x, det["y"] - pred_y)
+            pairs.append((dist, track_id, det_idx))
+    pairs.sort(key=lambda item: item[0])
+
+    used_tracks = set()
+    used_dets = set()
+    matches = []
+    for dist, track_id, det_idx in pairs:
+        if track_id in used_tracks or det_idx in used_dets:
+            continue
+        if gating_distance is not None and dist > gating_distance:
+            continue
+        used_tracks.add(track_id)
+        used_dets.add(det_idx)
+        matches.append((track_id, det_idx))
+
+    unmatched_tracks = [
+        track_id for track_id in predictions if track_id not in used_tracks
+    ]
+    unmatched_dets = [
+        det_idx for det_idx in range(len(detections)) if det_idx not in used_dets
+    ]
+    return matches, unmatched_tracks, unmatched_dets

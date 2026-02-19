@@ -92,12 +92,12 @@ def is_window_open():
         return False
 
 
-def _append_pocket_panel(image, pocket_info):
+def _append_pocket_panel(image, pocket_info, pocket_log):
     """Append a right-side panel with per-pocket detected colors."""
-    if not pocket_info:
+    if not pocket_info and not pocket_log:
         return image
 
-    panel_w = 260
+    panel_w = 320
     panel = np.full((image.shape[0], panel_w, 3), 28, dtype=np.uint8)
 
     cv2.putText(
@@ -125,10 +125,7 @@ def _append_pocket_panel(image, pocket_info):
     }
 
     lines = len(pocket_info)
-    if lines == 0:
-        return np.hstack([image, panel])
-
-    step = max(24, min(40, (panel.shape[0] - 60) // lines))
+    step = max(24, min(36, (panel.shape[0] - 80) // max(1, lines + 1)))
     y = 62
     for idx, label in enumerate(pocket_info, 1):
         key = str(label).lower()
@@ -147,20 +144,61 @@ def _append_pocket_panel(image, pocket_info):
         )
         y += step
 
+    log_title_y = y + 8
+    cv2.putText(
+        panel,
+        "Recent Pocket Log",
+        (12, log_title_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (220, 220, 220),
+        1,
+    )
+    cv2.line(
+        panel, (10, log_title_y + 8), (panel_w - 10, log_title_y + 8), (90, 90, 90), 1
+    )
+
+    logs = list(pocket_log or [])[:20]
+    if logs:
+        log_start = log_title_y + 28
+        available = panel.shape[0] - log_start - 8
+        log_step = max(12, min(18, available // max(1, len(logs))))
+        ly = log_start
+        for entry in logs:
+            if ly > panel.shape[0] - 6:
+                break
+            cv2.putText(
+                panel,
+                str(entry),
+                (12, ly),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                (170, 170, 170),
+                1,
+            )
+            ly += log_step
+
     return np.hstack([image, panel])
 
 
 def display_combined(
-    original, warped, text_info="", is_landscape=False, pocket_info=None
+    original, warped, text_info="", is_landscape=False, panel_data=None
 ):
     """
     Display original and warped images side by side or stacked.
     - is_landscape=False: side by side (horizontal)
     - is_landscape=True: stacked vertically (landscape)
     """
+    panel_data = panel_data or {}
+    pocket_info = panel_data.get("pocket_info")
+    pocket_log = panel_data.get("pocket_log")
+
     # Adapt scale to current window size to avoid fullscreen blur from heavy upscaling.
     scale = _adaptive_scale(
-        original, warped, is_landscape, has_pocket_panel=bool(pocket_info)
+        original,
+        warped,
+        is_landscape,
+        has_pocket_panel=bool(pocket_info or pocket_log),
     )
     original_scaled = cv2.resize(
         original, (int(original.shape[1] * scale), int(original.shape[0] * scale))
@@ -191,7 +229,7 @@ def display_combined(
             combined, text_info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1
         )
 
-    combined = _append_pocket_panel(combined, pocket_info)
+    combined = _append_pocket_panel(combined, pocket_info, pocket_log)
 
     _ensure_window()
     if _WINDOW_STATE["last_size"] == (0, 0):
@@ -226,9 +264,10 @@ def draw_tracked_balls(warped, tracked):
             x, y = pos
             r = 8
 
-        color = color_map.get(label, color_map["unknown"])
-        outline = (255, 255, 255) if label == "black" else color
-        if label == "cue":
+        base_label = label.split("_", 1)[0]
+        color = color_map.get(base_label, color_map["unknown"])
+        outline = (255, 255, 255) if base_label == "black" else color
+        if base_label == "cue":
             outline = (0, 0, 0)
 
         cv2.circle(warped, (x, y), r, outline, 2)
