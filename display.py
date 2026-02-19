@@ -48,7 +48,67 @@ def is_window_open():
         return False
 
 
-def display_combined(original, warped, text_info="", is_landscape=False):
+def _append_pocket_panel(image, pocket_info):
+    """Append a right-side panel with per-pocket detected colors."""
+    if not pocket_info:
+        return image
+
+    panel_w = 260
+    panel = np.full((image.shape[0], panel_w, 3), 28, dtype=np.uint8)
+
+    cv2.putText(
+        panel,
+        "Pocket Colors",
+        (12, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (230, 230, 230),
+        2,
+    )
+    cv2.line(panel, (10, 38), (panel_w - 10, 38), (90, 90, 90), 1)
+
+    color_map = {
+        "cue": (255, 255, 255),
+        "red": (0, 0, 255),
+        "yellow": (0, 255, 255),
+        "green": (0, 200, 0),
+        "brown": (42, 42, 165),
+        "blue": (255, 0, 0),
+        "pink": (203, 192, 255),
+        "black": (0, 0, 0),
+        "none": (140, 140, 140),
+        "unknown": (180, 180, 180),
+    }
+
+    lines = len(pocket_info)
+    if lines == 0:
+        return np.hstack([image, panel])
+
+    step = max(24, min(40, (panel.shape[0] - 60) // lines))
+    y = 62
+    for idx, label in enumerate(pocket_info, 1):
+        key = str(label).lower()
+        draw_color = color_map.get(key, color_map["unknown"])
+        text_label = "None" if key == "none" else str(label).capitalize()
+        line_text = f"Pocket {idx}: {text_label}"
+
+        cv2.putText(
+            panel,
+            line_text,
+            (12, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            draw_color,
+            2 if key == "black" else 1,
+        )
+        y += step
+
+    return np.hstack([image, panel])
+
+
+def display_combined(
+    original, warped, text_info="", is_landscape=False, pocket_info=None
+):
     """
     Display original and warped images side by side or stacked.
     - is_landscape=False: side by side (horizontal)
@@ -85,6 +145,8 @@ def display_combined(original, warped, text_info="", is_landscape=False):
             combined, text_info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1
         )
 
+    combined = _append_pocket_panel(combined, pocket_info)
+
     _ensure_window()
     if _WINDOW_STATE["last_size"] != combined.shape[:2][::-1]:
         _WINDOW_STATE["last_size"] = combined.shape[:2][::-1]
@@ -101,6 +163,7 @@ def draw_tracked_balls(warped, tracked):
     """Draw circles and labels on warped image for tracked balls."""
     color_map = {
         "cue": (255, 255, 255),
+        "red": (0, 0, 255),
         "yellow": (0, 255, 255),
         "green": (0, 200, 0),
         "brown": (42, 42, 165),

@@ -4,6 +4,7 @@ import os
 import time
 
 import cv2
+import numpy as np
 
 from detection import (
     detect_balls_blob,
@@ -17,6 +18,47 @@ from warping import TableWarper
 
 SHORT_SIDE_W = 280
 SHORT_SIDE_H = 560
+
+
+def _pocket_color_reads(pockets, tracked):
+    """Return per-pocket color labels from detections near pocket boxes."""
+    reads = []
+    for pocket in pockets:
+        px = pocket["x"]
+        py = pocket["y"]
+        ps = pocket["size"]
+        cx = px + (ps / 2.0)
+        cy = py + (ps / 2.0)
+        pad = int(ps * 0.8)
+        x1 = px - pad
+        y1 = py - pad
+        x2 = px + ps + pad
+        y2 = py + ps + pad
+
+        best_label = "none"
+        best_dist = None
+
+        for det in tracked:
+            bx = det.get("x")
+            by = det.get("y")
+            label = det.get("label", "unknown")
+            r = int(det.get("r", 0))
+            if bx is None or by is None:
+                continue
+
+            in_expanded_box = x1 <= bx <= x2 and y1 <= by <= y2
+            near_center = (bx - cx) ** 2 + (by - cy) ** 2 <= (ps + r) ** 2
+            if not (in_expanded_box or near_center):
+                continue
+
+            dist = (bx - cx) ** 2 + (by - cy) ** 2
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_label = label
+
+        reads.append(best_label)
+
+    return reads
 
 
 def select_video():
@@ -54,23 +96,40 @@ def select_video():
     return video_path
 
 
+def _collect_stable_table_corners(cap, max_scan_frames=24):
+    """Estimate stable table corners from several startup frames."""
+    candidates = []
+
+    for _ in range(max_scan_frames):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        corners = detect_table_corners(frame)
+        if corners is not None:
+            candidates.append(corners.astype(np.float32))
+
+    if not candidates:
+        return None
+
+    stacked = np.stack(candidates, axis=0)
+    median = np.median(stacked, axis=0)
+    best_idx = int(np.argmin([np.linalg.norm(c - median) for c in candidates]))
+    return candidates[best_idx]
+
+
 def _initialize_video(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print("ERROR: Cannot open video")
         return None, None, None
 
-    ret, first_frame = cap.read()
-    if not ret:
-        print("ERROR: Empty video")
+    table_pts = _collect_stable_table_corners(cap, max_scan_frames=24)
+    if table_pts is None:
+        print("ERROR: Table not detected in startup frames")
         cap.release()
         return None, None, None
 
-    table_pts = detect_table_corners(first_frame)
-    if table_pts is None:
-        print("ERROR: Table not detected")
-        cap.release()
-        return None, None, None
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     # Detect table orientation
     is_long_side = detect_table_orientation(table_pts)
@@ -108,6 +167,7 @@ def main():
         current_frame = None
         current_warped = None
         current_tracked = {}
+        current_detections = []
         current_pockets = []
 
         # FPS tracking
@@ -124,6 +184,7 @@ def main():
                 current_frame = frame
                 current_warped = warper.warp(frame)
                 detections = detect_balls_blob(current_warped)
+                current_detections = detections
                 current_tracked = tracker.update(detections)
                 if not current_pockets:
                     current_pockets = detect_pockets_warp(current_warped)
@@ -135,6 +196,7 @@ def main():
             # Draw tracked balls
             warped = draw_tracked_balls(warped, tracked)
             warped = draw_pockets(warped, current_pockets)
+            pocket_reads = _pocket_color_reads(current_pockets, current_detections)
 
             # Calculate FPS
             elapsed = time.time() - prev_time
@@ -153,6 +215,7 @@ def main():
                 warped,
                 info_text,
                 is_landscape=is_long_side,
+                pocket_info=pocket_reads,
             )
 
             # Handle key presses and window close events
