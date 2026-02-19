@@ -18,26 +18,70 @@ def _ensure_window():
 
 
 def _resize_to_window(image):
+    result = image
     try:
         _, _, win_w, win_h = cv2.getWindowImageRect(WINDOW_NAME)
     except Exception:  # pylint: disable=broad-exception-caught
-        return image
+        win_w, win_h = 0, 0
 
+    if win_w > 0 and win_h > 0:
+        h, w = image.shape[:2]
+        if abs(win_w - w) >= 2 or abs(win_h - h) >= 2:
+            scale = min(1.0, win_w / w, win_h / h)
+            if scale > 0:
+                new_w = max(1, int(w * scale))
+                new_h = max(1, int(h * scale))
+                if new_w == w and new_h == h:
+                    if win_w > w + 2 or win_h > h + 2:
+                        canvas = np.zeros((win_h, win_w, 3), dtype=np.uint8)
+                        x0 = max(0, (win_w - w) // 2)
+                        y0 = max(0, (win_h - h) // 2)
+                        canvas[y0 : y0 + h, x0 : x0 + w] = image
+                        result = canvas
+                else:
+                    result = cv2.resize(
+                        image, (new_w, new_h), interpolation=cv2.INTER_AREA
+                    )
+
+    return result
+
+
+def _window_image_size():
+    try:
+        _, _, win_w, win_h = cv2.getWindowImageRect(WINDOW_NAME)
+        return int(win_w), int(win_h)
+    except Exception:  # pylint: disable=broad-exception-caught
+        return 0, 0
+
+
+def _adaptive_scale(original, warped, is_landscape, has_pocket_panel):
+    default_scale = 0.35 if is_landscape else 0.4
+    win_w, win_h = _window_image_size()
     if win_w <= 0 or win_h <= 0:
-        return image
+        return default_scale
 
-    h, w = image.shape[:2]
-    if abs(win_w - w) < 2 and abs(win_h - h) < 2:
-        return image
-    scale = min(win_w / w, win_h / h)
-    if scale <= 0:
-        return image
+    oh, ow = original.shape[:2]
+    wh, ww = warped.shape[:2]
+    if wh <= 0:
+        return default_scale
 
-    new_w = max(1, int(w * scale))
-    new_h = max(1, int(h * scale))
-    if new_w == w and new_h == h:
-        return image
-    return cv2.resize(image, (new_w, new_h))
+    warped_ratio = ww / wh
+    panel_w = 260 if has_pocket_panel else 0
+
+    if is_landscape:
+        # Vertically stacked; both panels share the same width.
+        base_w = oh * warped_ratio
+        base_h = 2.0 * oh
+    else:
+        # Side-by-side; same height.
+        base_w = ow + (oh * warped_ratio)
+        base_h = float(oh)
+
+    usable_w = max(1.0, float(win_w - panel_w))
+    scale_w = usable_w / max(1.0, base_w)
+    scale_h = float(win_h) / max(1.0, base_h)
+    scale = min(1.0, scale_w, scale_h)
+    return max(0.1, scale)
 
 
 def is_window_open():
@@ -114,8 +158,10 @@ def display_combined(
     - is_landscape=False: side by side (horizontal)
     - is_landscape=True: stacked vertically (landscape)
     """
-    # Scale down - smaller for landscape
-    scale = 0.35 if is_landscape else 0.4
+    # Adapt scale to current window size to avoid fullscreen blur from heavy upscaling.
+    scale = _adaptive_scale(
+        original, warped, is_landscape, has_pocket_panel=bool(pocket_info)
+    )
     original_scaled = cv2.resize(
         original, (int(original.shape[1] * scale), int(original.shape[0] * scale))
     )
@@ -148,7 +194,7 @@ def display_combined(
     combined = _append_pocket_panel(combined, pocket_info)
 
     _ensure_window()
-    if _WINDOW_STATE["last_size"] != combined.shape[:2][::-1]:
+    if _WINDOW_STATE["last_size"] == (0, 0):
         _WINDOW_STATE["last_size"] = combined.shape[:2][::-1]
         cv2.resizeWindow(
             WINDOW_NAME, _WINDOW_STATE["last_size"][0], _WINDOW_STATE["last_size"][1]
