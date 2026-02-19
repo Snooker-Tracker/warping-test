@@ -150,6 +150,42 @@ def detect_balls_hough(_frame):
     return []
 
 
+def detect_pockets_warp(frame):
+    """Return fixed pocket boxes from warp geometry (4 corners + 2 middle long-side)."""
+    h, w = frame.shape[:2]
+    max_size = max(8, min(h, w) - 2)
+    size = min(max(12, int(min(h, w) * 0.07)), max_size)
+    half = size // 2
+    x_min = half
+    y_min = half
+    x_max = max(x_min, w - 1 - half)
+    y_max = max(y_min, h - 1 - half)
+    x_mid = int(np.clip(w // 2, x_min, x_max))
+    y_mid = int(np.clip(h // 2, y_min, y_max))
+
+    # Four corners of the warped frame.
+    centers = [
+        (x_min, y_min),
+        (x_max, y_min),
+        (x_max, y_max),
+        (x_min, y_max),
+    ]
+
+    # Two middle pockets on the long sides.
+    if w >= h:
+        centers.extend([(x_mid, y_min), (x_mid, y_max)])
+    else:
+        centers.extend([(x_min, y_mid), (x_max, y_mid)])
+
+    pockets = []
+    for cx, cy in centers:
+        x = int(np.clip(cx - half, 0, max(0, w - size)))
+        y = int(np.clip(cy - half, 0, max(0, h - size)))
+        pockets.append({"x": x, "y": y, "size": int(size)})
+
+    return pockets
+
+
 def classify_ball_color(hsv_frame, x, y, r):
     """Classify a ball color based on mean HSV in a circular mask."""
     h, s, v = _median_hsv_in_circle(hsv_frame, x, y, r)

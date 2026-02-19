@@ -39,6 +39,7 @@ def _resize_to_window(image):
         return image
     return cv2.resize(image, (new_w, new_h))
 
+
 def is_window_open():
     """Return True if the display window is still open."""
     try:
@@ -87,7 +88,9 @@ def display_combined(original, warped, text_info="", is_landscape=False):
     _ensure_window()
     if _WINDOW_STATE["last_size"] != combined.shape[:2][::-1]:
         _WINDOW_STATE["last_size"] = combined.shape[:2][::-1]
-        cv2.resizeWindow(WINDOW_NAME, _WINDOW_STATE["last_size"][0], _WINDOW_STATE["last_size"][1])
+        cv2.resizeWindow(
+            WINDOW_NAME, _WINDOW_STATE["last_size"][0], _WINDOW_STATE["last_size"][1]
+        )
     combined = _resize_to_window(combined)
     cv2.imshow(WINDOW_NAME, combined)
 
@@ -129,4 +132,33 @@ def draw_tracked_balls(warped, tracked):
             (255, 255, 255),
             1,
         )
+    return warped
+
+
+def draw_pockets(warped, pockets):
+    """Draw square markers for detected pockets."""
+    h, w = warped.shape[:2]
+    for idx, pocket in enumerate(pockets, 1):
+        x = int(pocket["x"])
+        y = int(pocket["y"])
+        size = max(8, int(pocket["size"]))
+
+        x1 = int(np.clip(x, 0, w - 1))
+        y1 = int(np.clip(y, 0, h - 1))
+        x2 = int(np.clip(x + size, 0, w - 1))
+        y2 = int(np.clip(y + size, 0, h - 1))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 165, 255), 2)
+        cv2.putText(
+            warped,
+            f"P{idx}",
+            (x1, max(12, y1 - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (0, 165, 255),
+            1,
+        )
+
     return warped

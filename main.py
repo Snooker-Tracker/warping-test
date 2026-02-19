@@ -5,8 +5,13 @@ import time
 
 import cv2
 
-from detection import detect_balls_blob, detect_table_corners, detect_table_orientation
-from display import display_combined, draw_tracked_balls, is_window_open
+from detection import (
+    detect_balls_blob,
+    detect_pockets_warp,
+    detect_table_corners,
+    detect_table_orientation,
+)
+from display import display_combined, draw_pockets, draw_tracked_balls, is_window_open
 from tracking import KalmanBallTracker
 from warping import TableWarper
 
@@ -103,6 +108,7 @@ def main():
         current_frame = None
         current_warped = None
         current_tracked = {}
+        current_pockets = []
 
         # FPS tracking
         fps = 0
@@ -119,6 +125,8 @@ def main():
                 current_warped = warper.warp(frame)
                 detections = detect_balls_blob(current_warped)
                 current_tracked = tracker.update(detections)
+                if not current_pockets:
+                    current_pockets = detect_pockets_warp(current_warped)
 
             frame = current_frame
             warped = current_warped.copy()
@@ -126,6 +134,7 @@ def main():
 
             # Draw tracked balls
             warped = draw_tracked_balls(warped, tracked)
+            warped = draw_pockets(warped, current_pockets)
 
             # Calculate FPS
             elapsed = time.time() - prev_time
@@ -135,10 +144,14 @@ def main():
 
             # Display combined view with pause status
             pause_text = " [PAUSED]" if paused else ""
+            info_text = (
+                f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)} "
+                f"| Pockets: {len(current_pockets)}{pause_text}"
+            )
             display_combined(
                 frame,
                 warped,
-                f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)}{pause_text}",
+                info_text,
                 is_landscape=is_long_side,
             )
 
