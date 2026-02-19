@@ -6,7 +6,16 @@ import numpy as np
 TABLE_HSV_LOWER = np.array([35, 40, 40])
 TABLE_HSV_UPPER = np.array([85, 255, 255])
 
-ALLOWED_BALL_LABELS = {"cue", "yellow", "green", "brown", "blue", "pink", "black"}
+ALLOWED_BALL_LABELS = {
+    "cue",
+    "yellow",
+    "green",
+    "brown",
+    "blue",
+    "pink",
+    "black",
+    "red",
+}
 
 
 def order_points(pts):
@@ -43,14 +52,38 @@ def detect_table_corners(frame):
 
     table_contour = max(contours, key=cv2.contourArea)
 
-    # Use Ramer-Douglas-Peucker algorithm to find 4 corners
+    candidates = []
+    minrect = _min_rect_corners(table_contour)
+
+    # Candidate 1: polygon approximation.
     epsilon = 0.02 * cv2.arcLength(table_contour, True)
     approx = cv2.approxPolyDP(table_contour, epsilon, True)
+    if len(approx) == 4:
+        candidates.append(approx.reshape(4, 2).astype("float32"))
 
-    if len(approx) != 4:
+    # Candidate 2: contour-extreme corners (robust fallback).
+    extreme = _extreme_corners_from_contour(table_contour)
+    if extreme is not None:
+        candidates.append(extreme)
+
+    if not candidates and minrect is None:
         return None
 
-    return order_points(approx.reshape(4, 2))
+    # Long-side recordings are much more stable with min-area-rect corners.
+    if minrect is not None and candidates:
+        long_side_view = any(
+            detect_table_orientation(order_points(cand)) for cand in candidates
+        )
+        if long_side_view:
+            return minrect
+
+    if candidates:
+        # For short-side, keep perspective-aware corners from contour geometry.
+        best = max(candidates, key=_quad_area)
+        if _quad_area(best) >= 100:
+            return order_points(best)
+
+    return minrect
 
 
 def detect_table_orientation(corners):
@@ -291,3 +324,44 @@ def _is_near_existing(detections, x, y, r):
         if dx * dx + dy * dy <= (r * r):
             return True
     return False
+
+
+def _min_rect_corners(contour):
+    if contour is None or len(contour) < 4:
+        return None
+    rect = cv2.minAreaRect(contour)
+    box = cv2.boxPoints(rect).astype(np.float32)
+    if _quad_area(box) < 100:
+        return None
+    return order_points(box)
+
+
+def _extreme_corners_from_contour(contour):
+    pts = contour.reshape(-1, 2)
+    if pts.shape[0] < 4:
+        return None
+
+    sums = pts[:, 0] + pts[:, 1]
+    diffs = pts[:, 0] - pts[:, 1]
+
+    corners = np.array(
+        [
+            pts[np.argmin(sums)],  # top-left
+            pts[np.argmax(diffs)],  # top-right
+            pts[np.argmax(sums)],  # bottom-right
+            pts[np.argmin(diffs)],  # bottom-left
+        ],
+        dtype=np.float32,
+    )
+
+    if _quad_area(corners) < 100:
+        return None
+    return corners
+
+
+def _quad_area(pts):
+    ordered = order_points(np.array(pts, dtype=np.float32))
+    x = ordered[:, 0]
+    y = ordered[:, 1]
+    area = 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+    return float(area)
