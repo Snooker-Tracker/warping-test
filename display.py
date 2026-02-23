@@ -5,6 +5,8 @@ import numpy as np
 
 WINDOW_NAME = "Original | Warped"
 _WINDOW_STATE = {"initialized": False, "last_size": (0, 0)}
+INITIAL_WINDOW_SCALE = 1.5
+POCKET_PANEL_WIDTH = 320
 
 
 def _ensure_window():
@@ -65,19 +67,18 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
     if not pocket_info and not pocket_log:
         return image
 
-    panel_w = 320
-    panel = np.full((image.shape[0], panel_w, 3), 28, dtype=np.uint8)
+    panel = np.full((image.shape[0], POCKET_PANEL_WIDTH, 3), 28, dtype=np.uint8)
 
     cv2.putText(
         panel,
         "Pocket Colors",
         (12, 28),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.5,
         (230, 230, 230),
         2,
     )
-    cv2.line(panel, (10, 38), (panel_w - 10, 38), (90, 90, 90), 1)
+    cv2.line(panel, (10, 38), (POCKET_PANEL_WIDTH - 10, 38), (90, 90, 90), 1)
 
     color_map = {
         "cue": (255, 255, 255),
@@ -106,7 +107,7 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
             line_text,
             (12, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.5,
             draw_color,
             2 if key == "black" else 1,
         )
@@ -118,12 +119,16 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
         "Recent Pocket Log",
         (12, log_title_y),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        0.5,
         (220, 220, 220),
         1,
     )
     cv2.line(
-        panel, (10, log_title_y + 8), (panel_w - 10, log_title_y + 8), (90, 90, 90), 1
+        panel,
+        (10, log_title_y + 8),
+        (POCKET_PANEL_WIDTH - 10, log_title_y + 8),
+        (90, 90, 90),
+        1,
     )
 
     logs = list(pocket_log or [])[:20]
@@ -140,7 +145,7 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
                 str(entry),
                 (12, ly),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
+                0.5,
                 (170, 170, 170),
                 1,
             )
@@ -150,12 +155,11 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
 
 
 def display_combined(
-    original, warped, text_info="", is_landscape=False, panel_data=None
+    _original, warped, text_info="", is_landscape=False, panel_data=None
 ):
     """
-    Display original and warped images side by side or stacked.
-    - is_landscape=False: side by side (horizontal)
-    - is_landscape=True: stacked vertically (landscape)
+    Display only the warped image.
+    - _original is kept for call-site compatibility.
     """
     panel_data = panel_data or {}
     pocket_info = panel_data.get("pocket_info")
@@ -163,40 +167,51 @@ def display_combined(
 
     # Keep render scale fixed so fullscreen does not change effective resolution.
     scale = _fixed_scale(is_landscape)
-    original_scaled = cv2.resize(
-        original, (int(original.shape[1] * scale), int(original.shape[0] * scale))
+    combined = cv2.resize(
+        warped, (int(warped.shape[1] * scale), int(warped.shape[0] * scale))
     )
-
-    h, _ = original_scaled.shape[:2]
-    wh, ww = warped.shape[:2]
-
-    if is_landscape:
-        # Stack vertically - make widths match
-        aspect_ratio = ww / wh
-        new_w = int(h * aspect_ratio)
-        warped_resized = cv2.resize(warped, (new_w, h))
-
-        # Resize original to match warped width
-        original_scaled = cv2.resize(original_scaled, (new_w, h))
-        combined = np.vstack([original_scaled, warped_resized])
-    else:
-        # Stack horizontally - make heights match
-        aspect_ratio = ww / wh
-        new_w = int(h * aspect_ratio)
-        warped_resized = cv2.resize(warped, (new_w, h))
-        combined = np.hstack([original_scaled, warped_resized])
-
-    # Add info text
-    if text_info:
-        cv2.putText(
-            combined, text_info, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1
-        )
 
     combined = _append_pocket_panel(combined, pocket_info, pocket_log)
 
+    # Place status text at top-right of the pocket panel area.
+    if text_info:
+        parts = [part.strip() for part in str(text_info).split("|") if part.strip()]
+        if not parts:
+            parts = [str(text_info)]
+
+        has_panel = bool(pocket_info or pocket_log)
+        if has_panel:
+            panel_x0 = combined.shape[1] - POCKET_PANEL_WIDTH
+            right_edge = combined.shape[1] - 12
+            min_x = panel_x0 + 12
+        else:
+            right_edge = combined.shape[1] - 12
+            min_x = 10
+
+        y = 25
+        for part in parts:
+            (text_w, _), _ = cv2.getTextSize(
+                part, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1
+            )
+            x = max(min_x, right_edge - text_w)
+            cv2.putText(
+                combined,
+                part,
+                (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                1,
+            )
+            y += 22
+
     _ensure_window()
     if _WINDOW_STATE["last_size"] == (0, 0):
-        _WINDOW_STATE["last_size"] = combined.shape[:2][::-1]
+        base_w, base_h = combined.shape[:2][::-1]
+        _WINDOW_STATE["last_size"] = (
+            int(base_w * INITIAL_WINDOW_SCALE),
+            int(base_h * INITIAL_WINDOW_SCALE),
+        )
         cv2.resizeWindow(
             WINDOW_NAME, _WINDOW_STATE["last_size"][0], _WINDOW_STATE["last_size"][1]
         )

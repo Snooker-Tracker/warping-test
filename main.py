@@ -19,6 +19,9 @@ from warping import TableWarper
 
 SHORT_SIDE_W = 280
 SHORT_SIDE_H = 560
+INPUT_DOWNSCALE = 0.85  # Slightly reduce input resolution for faster processing.
+PLAYBACK_FRAME_STEP = 2  # 2 means process every 2nd frame (faster traversal).
+DISPLAY_WAIT_MS = 1
 POCKET_INNER_MARGIN_RATIO = 0.22
 POCKET_CENTER_RADIUS_RATIO = 0.55
 POCKET_CONFIRM_FRAMES = 3
@@ -165,6 +168,17 @@ def select_video():
     return video_path
 
 
+def _downscale_frame(frame):
+    """Apply a light input downscale to speed up the pipeline."""
+    if frame is None or INPUT_DOWNSCALE >= 1.0:
+        return frame
+
+    h, w = frame.shape[:2]
+    new_w = max(1, int(w * INPUT_DOWNSCALE))
+    new_h = max(1, int(h * INPUT_DOWNSCALE))
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
 def _collect_stable_table_corners(cap, max_scan_frames=24):
     """Estimate stable table corners from several startup frames."""
     candidates = []
@@ -173,6 +187,7 @@ def _collect_stable_table_corners(cap, max_scan_frames=24):
         ret, frame = cap.read()
         if not ret:
             break
+        frame = _downscale_frame(frame)
         corners = detect_table_corners(frame)
         if corners is not None:
             candidates.append(corners.astype(np.float32))
@@ -251,10 +266,21 @@ def main():
 
         while True:
             if not paused:
+                step = max(1, int(PLAYBACK_FRAME_STEP))
+                frames_advanced = 0
+                for _ in range(step - 1):
+                    if not cap.grab():
+                        frames_advanced = -1
+                        break
+                    frames_advanced += 1
+                if frames_advanced < 0:
+                    break
+
                 ret, frame = cap.read()
                 if not ret:
                     break
-                frame_count += 1
+                frame = _downscale_frame(frame)
+                frame_count += frames_advanced + 1
                 current_frame = frame
                 current_warped = warper.warp(frame)
                 detections = detect_balls_blob(current_warped)
@@ -288,7 +314,7 @@ def main():
             pause_text = " [PAUSED]" if paused else ""
             info_text = (
                 f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)} "
-                f"| Pockets: {len(current_pockets)}{pause_text}"
+                f"{pause_text}"
             )
             panel_data = {
                 "pocket_info": pocket_reads,
@@ -303,7 +329,7 @@ def main():
             )
 
             # Handle key presses and window close events
-            key = cv2.waitKey(30) & 0xFF
+            key = cv2.waitKey(DISPLAY_WAIT_MS) & 0xFF
             if not is_window_open():
                 restart_requested = False
                 break
