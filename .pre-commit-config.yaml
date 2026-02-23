@@ -17,6 +17,6 @@ repos:
     hooks:
       - id: pylint
         name: pylint
-        entry: python -m pylint
+        entry: ./venv/Scripts/python.exe -m pylint
         language: system
         types: [python]

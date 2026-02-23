@@ -7,6 +7,9 @@ WINDOW_NAME = "Original | Warped"
 _WINDOW_STATE = {"initialized": False, "last_size": (0, 0)}
 INITIAL_WINDOW_SCALE = 1.5
 POCKET_PANEL_WIDTH = 320
+POCKET_ROW_STEP = 24
+SCORE_VISIBLE_ENTRIES = 15
+SCORE_ROW_H = 18
 
 
 def _ensure_window():
@@ -93,8 +96,7 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
         "unknown": (180, 180, 180),
     }
 
-    lines = len(pocket_info)
-    step = max(24, min(36, (panel.shape[0] - 80) // max(1, lines + 1)))
+    step = POCKET_ROW_STEP
     y = 62
     for idx, label in enumerate(pocket_info, 1):
         key = str(label).lower()
@@ -113,45 +115,69 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
         )
         y += step
 
-    log_title_y = y + 8
+    return np.hstack([image, panel])
+
+
+def _ensure_min_panel_height(image, pocket_info):
+    """Pad image height so pocket panel can show all pocket rows."""
+    pocket_count = len(pocket_info or [])
+    if pocket_count <= 0:
+        return image
+
+    required_h = 70 + (pocket_count * POCKET_ROW_STEP) + 12
+    current_h, current_w = image.shape[:2]
+    if current_h >= required_h:
+        return image
+
+    padded = np.zeros((required_h, current_w, 3), dtype=np.uint8)
+    padded[:current_h, :current_w] = image
+    return padded
+
+
+def _append_scoring_record_bottom(image, pocket_log):
+    """Append a bottom strip for scoring record history."""
+    logs = list(pocket_log or [])
+    visible_logs = logs[:SCORE_VISIBLE_ENTRIES]
+    score_panel_h = 32 + (SCORE_VISIBLE_ENTRIES * SCORE_ROW_H)
+
+    score_panel = np.full((score_panel_h, image.shape[1], 3), 18, dtype=np.uint8)
+    cv2.line(score_panel, (0, 0), (image.shape[1] - 1, 0), (85, 85, 85), 1)
+
     cv2.putText(
-        panel,
-        "Recent Pocket Log",
-        (12, log_title_y),
+        score_panel,
+        "Scoring Record",
+        (12, 22),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
         (220, 220, 220),
         1,
     )
-    cv2.line(
-        panel,
-        (10, log_title_y + 8),
-        (POCKET_PANEL_WIDTH - 10, log_title_y + 8),
-        (90, 90, 90),
-        1,
-    )
 
-    logs = list(pocket_log or [])[:20]
-    if logs:
-        log_start = log_title_y + 28
-        available = panel.shape[0] - log_start - 8
-        log_step = max(12, min(18, available // max(1, len(logs))))
-        ly = log_start
-        for entry in logs:
-            if ly > panel.shape[0] - 6:
-                break
+    if visible_logs:
+        y = 40
+        for entry in visible_logs:
             cv2.putText(
-                panel,
+                score_panel,
                 str(entry),
-                (12, ly),
+                (12, y),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
+                0.45,
                 (170, 170, 170),
                 1,
             )
-            ly += log_step
+            y += SCORE_ROW_H
+    else:
+        cv2.putText(
+            score_panel,
+            "No scores yet",
+            (12, 45),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (170, 170, 170),
+            1,
+        )
 
-    return np.hstack([image, panel])
+    return np.vstack([image, score_panel])
 
 
 def display_combined(
@@ -171,7 +197,9 @@ def display_combined(
         warped, (int(warped.shape[1] * scale), int(warped.shape[0] * scale))
     )
 
+    combined = _ensure_min_panel_height(combined, pocket_info)
     combined = _append_pocket_panel(combined, pocket_info, pocket_log)
+    combined = _append_scoring_record_bottom(combined, pocket_log)
 
     # Place status text at top-right of the pocket panel area.
     if text_info:
@@ -190,9 +218,7 @@ def display_combined(
 
         y = 25
         for part in parts:
-            (text_w, _), _ = cv2.getTextSize(
-                part, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1
-            )
+            (text_w, _), _ = cv2.getTextSize(part, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
             x = max(min_x, right_edge - text_w)
             cv2.putText(
                 combined,

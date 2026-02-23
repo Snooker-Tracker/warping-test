@@ -4,6 +4,7 @@ import os
 import time
 from collections import deque
 
+import ctypes
 import cv2
 import numpy as np
 
@@ -22,10 +23,31 @@ SHORT_SIDE_H = 560
 INPUT_DOWNSCALE = 0.85  # Slightly reduce input resolution for faster processing.
 PLAYBACK_FRAME_STEP = 2  # 2 means process every 2nd frame (faster traversal).
 DISPLAY_WAIT_MS = 1
-POCKET_INNER_MARGIN_RATIO = 0.22
-POCKET_CENTER_RADIUS_RATIO = 0.55
-POCKET_CONFIRM_FRAMES = 3
-POCKET_CLEAR_FRAMES = 3
+PAUSED_SCRUB_INTERVAL_MS = 90  # Small debounce to keep held-arrow scrubbing stable.
+LEFT_ARROW_KEYS = {2424832, 81}
+RIGHT_ARROW_KEYS = {2555904, 83}
+POCKET_INNER_MARGIN_RATIO = 0.08
+POCKET_CENTER_RADIUS_RATIO = 0.95
+POCKET_OUTER_RADIUS_RATIO = 1.35
+POCKET_CONFIRM_FRAMES = 1
+POCKET_CLEAR_FRAMES = 5
+VK_LEFT = 0x25
+VK_RIGHT = 0x27
+
+
+def _get_held_arrow_direction():
+    """Return -1 for held left, +1 for held right, 0 otherwise (Windows only)."""
+    try:
+        user32 = ctypes.windll.user32
+        left_down = bool(user32.GetAsyncKeyState(VK_LEFT) & 0x8000)
+        right_down = bool(user32.GetAsyncKeyState(VK_RIGHT) & 0x8000)
+        if left_down and not right_down:
+            return -1
+        if right_down and not left_down:
+            return 1
+    except Exception:  # pylint: disable=broad-exception-caught
+        return 0
+    return 0
 
 
 def _init_pocket_states(pocket_count):
@@ -55,6 +77,7 @@ def _raw_pocket_candidate(pocket, detections):
     inner_x2 = px + ps - margin
     inner_y2 = py + ps - margin
     center_radius_sq = float((ps * POCKET_CENTER_RADIUS_RATIO) ** 2)
+    outer_radius_sq = float((ps * POCKET_OUTER_RADIUS_RATIO) ** 2)
 
     best_label = "none"
     best_score = -1.0
@@ -71,12 +94,18 @@ def _raw_pocket_candidate(pocket, detections):
         dist_sq = (bx - cx) ** 2 + (by - cy) ** 2
         in_inner_box = inner_x1 <= bx <= inner_x2 and inner_y1 <= by <= inner_y2
         near_center = dist_sq <= center_radius_sq
+        near_outer = dist_sq <= outer_radius_sq
 
-        # Stronger rule: require the ball centroid to be in pocket core.
-        if not (in_inner_box or near_center):
+        # Lenient rule: allow a wider around-pocket area.
+        if not (in_inner_box or near_center or near_outer):
             continue
 
-        score = 2.5 if in_inner_box else 1.5
+        if in_inner_box:
+            score = 2.5
+        elif near_center:
+            score = 1.9
+        else:
+            score = 1.6
         score += max(0.0, 1.0 - (dist_sq / max(1.0, center_radius_sq)))
         score += min(1.0, r / 10.0)
         score += color_priority.get(label, 0.0)
@@ -201,6 +230,20 @@ def _collect_stable_table_corners(cap, max_scan_frames=24):
     return candidates[best_idx]
 
 
+def _process_frame(frame, warper, tracker, current_pockets, pocket_states):
+    """Run the processing pipeline for a single frame."""
+    frame = _downscale_frame(frame)
+    warped = warper.warp(frame)
+    detections = detect_balls_blob(warped)
+    tracked = tracker.update(detections)
+
+    if not current_pockets:
+        current_pockets = detect_pockets_warp(warped)
+        pocket_states = _init_pocket_states(len(current_pockets))
+
+    return frame, warped, detections, tracked, current_pockets, pocket_states
+
+
 def _initialize_video(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -226,7 +269,8 @@ def _initialize_video(video_path):
 
     print(f"Detected table corners: {table_pts}")
     print(f"Warp dimensions: {table_w}x{table_h}")
-    print("Press SPACE to pause/resume, R to restart, ESC to quit")
+    print("Press SPACE to pause/resume, LEFT/RIGHT to scrub while paused")
+    print("Press P to jump to a frame, R to restart, ESC to quit")
 
     warper = TableWarper((table_w, table_h))
     warper.compute(table_pts)
@@ -248,6 +292,11 @@ def main():
         tracker = KalmanBallTracker(
             max_missing=12, gating_distance=60, max_red_tracks=15
         )
+        tracker_config = {
+            "max_missing": 12,
+            "gating_distance": 60,
+            "max_red_tracks": 15,
+        }
         frame_count = 0
         paused = False
         current_frame = None
@@ -262,6 +311,7 @@ def main():
         # FPS tracking
         fps = 0
         prev_time = time.time()
+        last_scrub_time = 0.0
         restart_requested = False
 
         while True:
@@ -279,16 +329,21 @@ def main():
                 ret, frame = cap.read()
                 if not ret:
                     break
-                frame = _downscale_frame(frame)
                 frame_count += frames_advanced + 1
-                current_frame = frame
-                current_warped = warper.warp(frame)
-                detections = detect_balls_blob(current_warped)
-                current_detections = detections
-                current_tracked = tracker.update(detections)
-                if not current_pockets:
-                    current_pockets = detect_pockets_warp(current_warped)
-                    pocket_states = _init_pocket_states(len(current_pockets))
+                (
+                    current_frame,
+                    current_warped,
+                    current_detections,
+                    current_tracked,
+                    current_pockets,
+                    pocket_states,
+                ) = _process_frame(
+                    frame,
+                    warper,
+                    tracker,
+                    current_pockets,
+                    pocket_states,
+                )
 
             frame = current_frame
             warped = current_warped.copy()
@@ -329,18 +384,104 @@ def main():
             )
 
             # Handle key presses and window close events
-            key = cv2.waitKey(DISPLAY_WAIT_MS) & 0xFF
+            key = cv2.waitKeyEx(DISPLAY_WAIT_MS)
             if not is_window_open():
                 restart_requested = False
                 break
-            if key == 27:  # ESC to quit
+            if key in (27, 1048603):  # ESC to quit
                 restart_requested = False
                 break
-            if key in (ord("r"), ord("R")):
+            if key in (ord("r"), ord("R"), ord("r") + 0x100000, ord("R") + 0x100000):
                 restart_requested = True
                 break
-            if key == 32:  # SPACE to pause/resume
+            if key in (ord("p"), ord("P"), ord("p") + 0x100000, ord("P") + 0x100000):
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                max_frame = max(1, total_frames)
+                prompt = f"Jump to frame (1-{max_frame}): "
+                try:
+                    target_str = input(prompt).strip()
+                except EOFError:
+                    target_str = ""
+                if not target_str:
+                    continue
+                if not target_str.isdigit():
+                    print("Invalid frame number.")
+                    continue
+
+                target_frame = int(target_str)
+                target_frame = max(1, min(max_frame, target_frame))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame - 1)
+                ret, frame = cap.read()
+                if not ret:
+                    print(f"Could not jump to frame {target_frame}.")
+                    continue
+
+                tracker = KalmanBallTracker(**tracker_config)
+                current_pockets = []
+                pocket_states = []
+                current_detections = []
+                current_tracked = {}
+                (
+                    current_frame,
+                    current_warped,
+                    current_detections,
+                    current_tracked,
+                    current_pockets,
+                    pocket_states,
+                ) = _process_frame(
+                    frame,
+                    warper,
+                    tracker,
+                    current_pockets,
+                    pocket_states,
+                )
+                frame_count = target_frame
+                print(f"Jumped to frame {target_frame}.")
+                continue
+            if key in (32, 1048608):  # SPACE to pause/resume
                 paused = not paused
+                continue
+            scrub_direction = 0
+            if paused:
+                if key in LEFT_ARROW_KEYS:
+                    scrub_direction = -1
+                elif key in RIGHT_ARROW_KEYS:
+                    scrub_direction = 1
+                else:
+                    scrub_direction = _get_held_arrow_direction()
+
+            if paused and scrub_direction != 0:
+                now = time.time()
+                if (now - last_scrub_time) * 1000.0 < PAUSED_SCRUB_INTERVAL_MS:
+                    continue
+                last_scrub_time = now
+
+                next_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                if scrub_direction < 0:
+                    target_pos = max(0, next_pos - 2)
+                else:
+                    target_pos = max(0, next_pos)
+
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target_pos)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+
+                (
+                    current_frame,
+                    current_warped,
+                    current_detections,
+                    current_tracked,
+                    current_pockets,
+                    pocket_states,
+                ) = _process_frame(
+                    frame,
+                    warper,
+                    tracker,
+                    current_pockets,
+                    pocket_states,
+                )
+                frame_count = max(1, int(cap.get(cv2.CAP_PROP_POS_FRAMES)))
 
         cap.release()
         if not restart_requested:
