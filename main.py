@@ -2,6 +2,7 @@
 
 import os
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -18,47 +19,115 @@ from warping import TableWarper
 
 SHORT_SIDE_W = 280
 SHORT_SIDE_H = 560
+POCKET_INNER_MARGIN_RATIO = 0.22
+POCKET_CENTER_RADIUS_RATIO = 0.55
+POCKET_CONFIRM_FRAMES = 3
+POCKET_CLEAR_FRAMES = 3
 
 
-def _pocket_color_reads(pockets, tracked):
-    """Return per-pocket color labels from detections near pocket boxes."""
+def _init_pocket_states(pocket_count):
+    """Initialize per-pocket confirmation state."""
+    return [
+        {
+            "candidate": "none",
+            "candidate_streak": 0,
+            "clear_streak": 0,
+            "confirmed": "none",
+        }
+        for _ in range(pocket_count)
+    ]
+
+
+def _raw_pocket_candidate(pocket, detections):
+    """Get the strongest per-frame pocket color candidate."""
+    px = pocket["x"]
+    py = pocket["y"]
+    ps = pocket["size"]
+    cx = px + (ps / 2.0)
+    cy = py + (ps / 2.0)
+
+    margin = int(ps * POCKET_INNER_MARGIN_RATIO)
+    inner_x1 = px + margin
+    inner_y1 = py + margin
+    inner_x2 = px + ps - margin
+    inner_y2 = py + ps - margin
+    center_radius_sq = float((ps * POCKET_CENTER_RADIUS_RATIO) ** 2)
+
+    best_label = "none"
+    best_score = -1.0
+    color_priority = {"pink": 0.8, "brown": 0.8, "red": -0.2}
+
+    for det in detections:
+        bx = det.get("x")
+        by = det.get("y")
+        label = str(det.get("label", "unknown")).lower()
+        r = int(det.get("r", 0))
+        if bx is None or by is None or label in ("unknown", "none"):
+            continue
+
+        dist_sq = (bx - cx) ** 2 + (by - cy) ** 2
+        in_inner_box = inner_x1 <= bx <= inner_x2 and inner_y1 <= by <= inner_y2
+        near_center = dist_sq <= center_radius_sq
+
+        # Stronger rule: require the ball centroid to be in pocket core.
+        if not (in_inner_box or near_center):
+            continue
+
+        score = 2.5 if in_inner_box else 1.5
+        score += max(0.0, 1.0 - (dist_sq / max(1.0, center_radius_sq)))
+        score += min(1.0, r / 10.0)
+        score += color_priority.get(label, 0.0)
+
+        if score > best_score:
+            best_score = score
+            best_label = label
+
+    return best_label
+
+
+def _pocket_color_reads(pockets, detections, pocket_states):
+    """Return stable per-pocket colors using strict and temporal rules."""
+    if len(pocket_states) != len(pockets):
+        pocket_states = _init_pocket_states(len(pockets))
+
     reads = []
-    for pocket in pockets:
-        px = pocket["x"]
-        py = pocket["y"]
-        ps = pocket["size"]
-        cx = px + (ps / 2.0)
-        cy = py + (ps / 2.0)
-        pad = int(ps * 0.8)
-        x1 = px - pad
-        y1 = py - pad
-        x2 = px + ps + pad
-        y2 = py + ps + pad
+    for idx, pocket in enumerate(pockets):
+        candidate = _raw_pocket_candidate(pocket, detections)
+        state = pocket_states[idx]
 
-        best_label = "none"
-        best_dist = None
+        if candidate == "none":
+            state["candidate"] = "none"
+            state["candidate_streak"] = 0
+            state["clear_streak"] += 1
+            if state["clear_streak"] >= POCKET_CLEAR_FRAMES:
+                state["confirmed"] = "none"
+        else:
+            state["clear_streak"] = 0
+            if state["candidate"] == candidate:
+                state["candidate_streak"] += 1
+            else:
+                state["candidate"] = candidate
+                state["candidate_streak"] = 1
+            if state["candidate_streak"] >= POCKET_CONFIRM_FRAMES:
+                state["confirmed"] = candidate
 
-        for det in tracked:
-            bx = det.get("x")
-            by = det.get("y")
-            label = det.get("label", "unknown")
-            r = int(det.get("r", 0))
-            if bx is None or by is None:
-                continue
+        reads.append(state["confirmed"])
 
-            in_expanded_box = x1 <= bx <= x2 and y1 <= by <= y2
-            near_center = (bx - cx) ** 2 + (by - cy) ** 2 <= (ps + r) ** 2
-            if not (in_expanded_box or near_center):
-                continue
+    return reads, pocket_states
 
-            dist = (bx - cx) ** 2 + (by - cy) ** 2
-            if best_dist is None or dist < best_dist:
-                best_dist = dist
-                best_label = label
 
-        reads.append(best_label)
+def _update_pocket_history(pocket_reads, prev_reads, history, frame_count):
+    """Append new pocket events and return current reads as the next previous state."""
+    normalized = [str(label).lower() for label in pocket_reads]
+    if len(prev_reads) != len(normalized):
+        prev_reads = ["none"] * len(normalized)
 
-    return reads
+    for idx, label in enumerate(normalized):
+        prev = prev_reads[idx]
+        if label not in ("none", prev):
+            history.appendleft(f"F{frame_count} P{idx + 1} {label.capitalize()}")
+
+    return normalized
 
 
 def select_video():
@@ -161,7 +230,9 @@ def main():
         if cap is None:
             return
 
-        tracker = KalmanBallTracker(max_missing=12, gating_distance=60)
+        tracker = KalmanBallTracker(
+            max_missing=12, gating_distance=60, max_red_tracks=15
+        )
         frame_count = 0
         paused = False
         current_frame = None
@@ -169,6 +240,9 @@ def main():
         current_tracked = {}
         current_detections = []
         current_pockets = []
+        pocket_states = []
+        pocket_history = deque(maxlen=20)
+        prev_pocket_reads = []
 
         # FPS tracking
         fps = 0
@@ -188,6 +262,7 @@ def main():
                 current_tracked = tracker.update(detections)
                 if not current_pockets:
                     current_pockets = detect_pockets_warp(current_warped)
+                    pocket_states = _init_pocket_states(len(current_pockets))
 
             frame = current_frame
             warped = current_warped.copy()
@@ -196,7 +271,12 @@ def main():
             # Draw tracked balls
             warped = draw_tracked_balls(warped, tracked)
             warped = draw_pockets(warped, current_pockets)
-            pocket_reads = _pocket_color_reads(current_pockets, current_detections)
+            pocket_reads, pocket_states = _pocket_color_reads(
+                current_pockets, current_detections, pocket_states
+            )
+            prev_pocket_reads = _update_pocket_history(
+                pocket_reads, prev_pocket_reads, pocket_history, frame_count
+            )
 
             # Calculate FPS
             elapsed = time.time() - prev_time
@@ -210,12 +290,16 @@ def main():
                 f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)} "
                 f"| Pockets: {len(current_pockets)}{pause_text}"
             )
+            panel_data = {
+                "pocket_info": pocket_reads,
+                "pocket_log": list(pocket_history),
+            }
             display_combined(
                 frame,
                 warped,
                 info_text,
                 is_landscape=is_long_side,
-                pocket_info=pocket_reads,
+                panel_data=panel_data,
             )
 
             # Handle key presses and window close events
