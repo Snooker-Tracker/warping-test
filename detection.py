@@ -235,8 +235,8 @@ def classify_ball_color(hsv_frame, x, y, r):
         label = "pink"
     elif 15 <= h <= 40:
         label = "yellow"
-    elif 40 < h <= 85:
-        label = "green"
+    # elif 40 < h <= 85:
+    # label = "green"
     elif 90 <= h <= 135:
         label = "blue"
     elif h <= 15 or h >= 165:
