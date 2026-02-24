@@ -21,7 +21,7 @@ from warping import TableWarper
 SHORT_SIDE_W = 280
 SHORT_SIDE_H = 560
 INPUT_DOWNSCALE = 0.85  # Slightly reduce input resolution for faster processing.
-PLAYBACK_FRAME_STEP = 2  # 2 means process every 2nd frame (faster traversal).
+PLAYBACK_FRAME_STEP = 1  # Process every frame for real-time playback.
 DISPLAY_WAIT_MS = 1
 PAUSED_SCRUB_INTERVAL_MS = 90  # Small debounce to keep held-arrow scrubbing stable.
 LEFT_ARROW_KEYS = {2424832, 81}
@@ -278,6 +278,14 @@ def _initialize_video(video_path):
     return cap, warper, is_long_side
 
 
+def _video_frame_interval_ms(cap):
+    """Return frame interval in milliseconds from source FPS."""
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if fps <= 1e-6:
+        return 0.0
+    return 1000.0 / fps
+
+
 def main():
     """Run the ball tracking pipeline for a selected video."""
     video_path = select_video()
@@ -313,8 +321,10 @@ def main():
         prev_time = time.time()
         last_scrub_time = 0.0
         restart_requested = False
+        frame_interval_ms = _video_frame_interval_ms(cap)
 
         while True:
+            loop_start = time.perf_counter()
             if not paused:
                 step = max(1, int(PLAYBACK_FRAME_STEP))
                 frames_advanced = 0
@@ -384,7 +394,11 @@ def main():
             )
 
             # Handle key presses and window close events
-            key = cv2.waitKeyEx(DISPLAY_WAIT_MS)
+            wait_ms = DISPLAY_WAIT_MS
+            if not paused and frame_interval_ms > 0:
+                elapsed_ms = (time.perf_counter() - loop_start) * 1000.0
+                wait_ms = max(1, int(round(frame_interval_ms - elapsed_ms)))
+            key = cv2.waitKeyEx(wait_ms)
             if not is_window_open():
                 restart_requested = False
                 break
