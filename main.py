@@ -26,11 +26,9 @@ DISPLAY_WAIT_MS = 1
 PAUSED_SCRUB_INTERVAL_MS = 90  # Small debounce to keep held-arrow scrubbing stable.
 LEFT_ARROW_KEYS = {2424832, 81}
 RIGHT_ARROW_KEYS = {2555904, 83}
-POCKET_INNER_MARGIN_RATIO = 0.08
-POCKET_CENTER_RADIUS_RATIO = 0.95
-POCKET_OUTER_RADIUS_RATIO = 1.35
 POCKET_CONFIRM_FRAMES = 1
 POCKET_CLEAR_FRAMES = 5
+POCKET_HIT_COOLDOWN_SECONDS = 10
 VK_LEFT = 0x25
 VK_RIGHT = 0x27
 
@@ -58,74 +56,67 @@ def _init_pocket_states(pocket_count):
             "candidate_streak": 0,
             "clear_streak": 0,
             "confirmed": "none",
+            "cooldown_until_s": 0.0,
+            "armed": True,
         }
         for _ in range(pocket_count)
     ]
 
 
-def _raw_pocket_candidate(pocket, detections):
-    """Get the strongest per-frame pocket color candidate."""
+def _raw_pocket_candidate(pocket, tracked):
+    """Return tracked ball color when a sphere overlaps the pocket rectangle."""
     px = pocket["x"]
     py = pocket["y"]
     ps = pocket["size"]
-    cx = px + (ps / 2.0)
-    cy = py + (ps / 2.0)
+    if not tracked:
+        return "none"
 
-    margin = int(ps * POCKET_INNER_MARGIN_RATIO)
-    inner_x1 = px + margin
-    inner_y1 = py + margin
-    inner_x2 = px + ps - margin
-    inner_y2 = py + ps - margin
-    center_radius_sq = float((ps * POCKET_CENTER_RADIUS_RATIO) ** 2)
-    outer_radius_sq = float((ps * POCKET_OUTER_RADIUS_RATIO) ** 2)
-
+    # Slightly expand rectangle by ball radius to count edge overlaps.
     best_label = "none"
     best_score = -1.0
-    color_priority = {"pink": 0.8, "brown": 0.8, "red": -0.2}
-
-    for det in detections:
-        bx = det.get("x")
-        by = det.get("y")
-        label = str(det.get("label", "unknown")).lower()
-        r = int(det.get("r", 0))
-        if bx is None or by is None or label in ("unknown", "none"):
-            continue
-
-        dist_sq = (bx - cx) ** 2 + (by - cy) ** 2
-        in_inner_box = inner_x1 <= bx <= inner_x2 and inner_y1 <= by <= inner_y2
-        near_center = dist_sq <= center_radius_sq
-        near_outer = dist_sq <= outer_radius_sq
-
-        # Lenient rule: allow a wider around-pocket area.
-        if not (in_inner_box or near_center or near_outer):
-            continue
-
-        if in_inner_box:
-            score = 2.5
-        elif near_center:
-            score = 1.9
+    cx = px + (ps / 2.0)
+    cy = py + (ps / 2.0)
+    for track_label, pos in tracked.items():
+        if len(pos) == 3:
+            bx, by, r = pos
         else:
-            score = 1.6
-        score += max(0.0, 1.0 - (dist_sq / max(1.0, center_radius_sq)))
-        score += min(1.0, r / 10.0)
-        score += color_priority.get(label, 0.0)
+            bx, by = pos
+            r = 0
 
+        expand = max(0, int(r))
+        x1 = px - expand
+        y1 = py - expand
+        x2 = px + ps + expand
+        y2 = py + ps + expand
+        if not (x1 <= bx <= x2 and y1 <= by <= y2):
+            continue
+
+        # Prefer ball centers closer to pocket center when multiple overlap.
+        dist_sq = float((bx - cx) ** 2 + (by - cy) ** 2)
+        score = max(0.0, 1.0 - (dist_sq / max(1.0, float(ps * ps))))
+        score += min(1.0, float(r) / 10.0)
         if score > best_score:
             best_score = score
-            best_label = label
+            best_label = str(track_label).split("_", 1)[0].lower()
 
-    return best_label
+    return best_label if best_score >= 0.0 else "none"
 
 
-def _pocket_color_reads(pockets, detections, pocket_states):
-    """Return stable per-pocket colors using strict and temporal rules."""
+def _pocket_color_reads(pockets, tracked, pocket_states, video_time_s):
+    """Return stable per-pocket tracked-ball colors using temporal rules."""
     if len(pocket_states) != len(pockets):
         pocket_states = _init_pocket_states(len(pockets))
 
     reads = []
     for idx, pocket in enumerate(pockets):
-        candidate = _raw_pocket_candidate(pocket, detections)
         state = pocket_states[idx]
+        if video_time_s < float(state.get("cooldown_until_s", 0.0)):
+            # During cooldown, hide state and keep pocket disarmed.
+            state["confirmed"] = "none"
+            reads.append("none")
+            continue
+
+        candidate = _raw_pocket_candidate(pocket, tracked)
 
         if candidate == "none":
             state["candidate"] = "none"
@@ -133,19 +124,38 @@ def _pocket_color_reads(pockets, detections, pocket_states):
             state["clear_streak"] += 1
             if state["clear_streak"] >= POCKET_CLEAR_FRAMES:
                 state["confirmed"] = "none"
+                state["armed"] = True
         else:
             state["clear_streak"] = 0
+            if not state.get("armed", True):
+                reads.append("none")
+                continue
             if state["candidate"] == candidate:
                 state["candidate_streak"] += 1
             else:
                 state["candidate"] = candidate
                 state["candidate_streak"] = 1
-            if state["candidate_streak"] >= POCKET_CONFIRM_FRAMES:
+            if (
+                state["candidate_streak"] >= POCKET_CONFIRM_FRAMES
+                and state["confirmed"] != candidate
+            ):
                 state["confirmed"] = candidate
+                state["cooldown_until_s"] = video_time_s + POCKET_HIT_COOLDOWN_SECONDS
+                state["armed"] = False
 
         reads.append(state["confirmed"])
 
     return reads, pocket_states
+
+
+def _current_video_time_seconds(cap, frame_count, source_fps):
+    """Return current video timestamp in seconds, with frame-based fallback."""
+    pos_msec = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+    if pos_msec > 0:
+        return pos_msec / 1000.0
+    if source_fps and source_fps > 1e-6:
+        return float(frame_count) / float(source_fps)
+    return 0.0
 
 
 def _update_pocket_history(pocket_reads, prev_reads, history, frame_count):
@@ -241,7 +251,7 @@ def _process_frame(frame, warper, tracker, current_pockets, pocket_states):
         current_pockets = detect_pockets_warp(warped)
         pocket_states = _init_pocket_states(len(current_pockets))
 
-    return frame, warped, detections, tracked, current_pockets, pocket_states
+    return frame, warped, tracked, current_pockets, pocket_states
 
 
 def _initialize_video(video_path):
@@ -310,7 +320,6 @@ def main():
         current_frame = None
         current_warped = None
         current_tracked = {}
-        current_detections = []
         current_pockets = []
         pocket_states = []
         pocket_history = deque(maxlen=20)
@@ -322,6 +331,7 @@ def main():
         last_scrub_time = 0.0
         restart_requested = False
         frame_interval_ms = _video_frame_interval_ms(cap)
+        source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
 
         while True:
             loop_start = time.perf_counter()
@@ -343,7 +353,6 @@ def main():
                 (
                     current_frame,
                     current_warped,
-                    current_detections,
                     current_tracked,
                     current_pockets,
                     pocket_states,
@@ -362,8 +371,9 @@ def main():
             # Draw tracked balls
             warped = draw_tracked_balls(warped, tracked)
             warped = draw_pockets(warped, current_pockets)
+            video_time_s = _current_video_time_seconds(cap, frame_count, source_fps)
             pocket_reads, pocket_states = _pocket_color_reads(
-                current_pockets, current_detections, pocket_states
+                current_pockets, current_tracked, pocket_states, video_time_s
             )
             prev_pocket_reads = _update_pocket_history(
                 pocket_reads, prev_pocket_reads, pocket_history, frame_count
@@ -433,12 +443,10 @@ def main():
                 tracker = KalmanBallTracker(**tracker_config)
                 current_pockets = []
                 pocket_states = []
-                current_detections = []
                 current_tracked = {}
                 (
                     current_frame,
                     current_warped,
-                    current_detections,
                     current_tracked,
                     current_pockets,
                     pocket_states,
@@ -484,7 +492,6 @@ def main():
                 (
                     current_frame,
                     current_warped,
-                    current_detections,
                     current_tracked,
                     current_pockets,
                     pocket_states,

@@ -66,7 +66,7 @@ def is_window_open():
 
 
 def _append_pocket_panel(image, pocket_info, pocket_log):
-    """Append a right-side panel with per-pocket detected colors."""
+    """Append a right-side panel with per-pocket state."""
     if not pocket_info and not pocket_log:
         return image
 
@@ -74,7 +74,7 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
 
     cv2.putText(
         panel,
-        "Pocket Colors",
+        "Pocket State",
         (12, 28),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
@@ -94,6 +94,7 @@ def _append_pocket_panel(image, pocket_info, pocket_log):
         "black": (0, 0, 0),
         "none": (140, 140, 140),
         "unknown": (180, 180, 180),
+        "ball": (0, 200, 255),
     }
 
     step = POCKET_ROW_STEP
