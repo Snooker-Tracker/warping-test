@@ -2,19 +2,20 @@
 
 import os
 import time
-from collections import deque
+# from collections import deque
 
 import cv2
 import numpy as np
 
 from detection import (
-    detect_balls_blob,
+    # detect_balls_blob,
     detect_pockets_warp,
     detect_table_corners,
     detect_table_orientation,
 )
-from display import display_combined, draw_pockets, draw_tracked_balls, is_window_open
-from tracking import KalmanBallTracker
+from display import display_combined, draw_pockets, is_window_open
+
+# from tracking import KalmanBallTracker
 from warping import TableWarper
 
 SHORT_SIDE_W = 280
@@ -230,19 +231,19 @@ def main():
         if cap is None:
             return
 
-        tracker = KalmanBallTracker(
-            max_missing=12, gating_distance=60, max_red_tracks=15
-        )
+        # tracker = KalmanBallTracker(
+        #     max_missing=12, gating_distance=60, max_red_tracks=15
+        # )
         frame_count = 0
         paused = False
         current_frame = None
         current_warped = None
-        current_tracked = {}
-        current_detections = []
+        # current_tracked = {}
+        # current_detections = []
         current_pockets = []
-        pocket_states = []
-        pocket_history = deque(maxlen=20)
-        prev_pocket_reads = []
+        # pocket_states = []
+        # pocket_history = deque(maxlen=20)
+        # prev_pocket_reads = []
 
         # FPS tracking
         fps = 0
@@ -257,26 +258,26 @@ def main():
                 frame_count += 1
                 current_frame = frame
                 current_warped = warper.warp(frame)
-                detections = detect_balls_blob(current_warped)
-                current_detections = detections
-                current_tracked = tracker.update(detections)
+                # detections = detect_balls_blob(current_warped)
+                # current_detections = detections
+                # current_tracked = tracker.update(detections)
                 if not current_pockets:
                     current_pockets = detect_pockets_warp(current_warped)
-                    pocket_states = _init_pocket_states(len(current_pockets))
+                    # pocket_states = _init_pocket_states(len(current_pockets))
 
             frame = current_frame
             warped = current_warped.copy()
-            tracked = current_tracked
+            # tracked = current_tracked
 
             # Draw tracked balls
-            warped = draw_tracked_balls(warped, tracked)
+            # warped = draw_tracked_balls(warped, tracked)
             warped = draw_pockets(warped, current_pockets)
-            pocket_reads, pocket_states = _pocket_color_reads(
-                current_pockets, current_detections, pocket_states
-            )
-            prev_pocket_reads = _update_pocket_history(
-                pocket_reads, prev_pocket_reads, pocket_history, frame_count
-            )
+            # pocket_reads, pocket_states = _pocket_color_reads(
+            #     current_pockets, current_detections, pocket_states
+            # )
+            # prev_pocket_reads = _update_pocket_history(
+            #     pocket_reads, prev_pocket_reads, pocket_history, frame_count
+            # )
 
             # Calculate FPS
             elapsed = time.time() - prev_time
@@ -287,19 +288,19 @@ def main():
             # Display combined view with pause status
             pause_text = " [PAUSED]" if paused else ""
             info_text = (
-                f"Frame: {frame_count} | FPS: {fps:.1f} | Balls: {len(tracked)} "
+                f"Frame: {frame_count} | FPS: {fps:.1f} "
                 f"| Pockets: {len(current_pockets)}{pause_text}"
             )
-            panel_data = {
-                "pocket_info": pocket_reads,
-                "pocket_log": list(pocket_history),
-            }
+            # panel_data = {
+            #     "pocket_info": pocket_reads,
+            #     "pocket_log": list(pocket_history),
+            # }
             display_combined(
                 frame,
                 warped,
                 info_text,
                 is_landscape=is_long_side,
-                panel_data=panel_data,
+                panel_data={},
             )
 
             # Handle key presses and window close events
